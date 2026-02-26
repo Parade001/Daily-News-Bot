@@ -17,7 +17,7 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 
-# 工业级网络 Session 初始化 (云端环境，直接去除所有代理配置)
+# 工业级网络 Session 初始化 (云端直连，无需代理)
 http_session = requests.Session()
 retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[ 500, 502, 503, 504 ])
 adapter = HTTPAdapter(max_retries=retries)
@@ -100,7 +100,7 @@ def translate_with_deepseek(text):
         return safe_text
 
 def fetch_and_format_news():
-    # 为了让标题时间显示为你所在的时区（假设东八区），进行时区转换
+    # 转换为东八区时间显示
     tz = datetime.timezone(datetime.timedelta(hours=8))
     today_str = datetime.datetime.now(tz).strftime("%Y-%m-%d")
 
@@ -159,10 +159,16 @@ def fetch_and_format_news():
     return md_content, today_str
 
 def send_email_with_md(md_content, date_str):
-    msg = MIMEMultipart('alternative')
+    # ==========================================
+    # 核心修复：使用 mixed 作为根消息，支持并列展示正文和附件
+    # ==========================================
+    msg = MIMEMultipart('mixed')
     msg['From'] = SENDER_EMAIL
     msg['To'] = RECEIVER_EMAIL
     msg['Subject'] = f"📊 核心政经与大宗商品简报 - {date_str}"
+
+    # 创建一个 alternative 容器用于装载 HTML 和 纯文本正文
+    alt_part = MIMEMultipart('alternative')
 
     html_body = markdown.markdown(md_content, extensions=['tables'])
     html_template = f"""
@@ -186,8 +192,23 @@ def send_email_with_md(md_content, date_str):
 
     part1 = MIMEText(md_content, 'plain', 'utf-8')
     part2 = MIMEText(html_template, 'html', 'utf-8')
-    msg.attach(part1)
-    msg.attach(part2)
+    alt_part.attach(part1)
+    alt_part.attach(part2)
+
+    # 将包含排版的正文放入根消息
+    msg.attach(alt_part)
+
+    # ==========================================
+    # 生成并挂载 Markdown 附件
+    # ==========================================
+    filename = f"Global_Intelligence_{date_str}.md"
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(md_content)
+
+    with open(filename, "rb") as f:
+        attach = MIMEApplication(f.read(), _subtype="markdown")
+        attach.add_header('Content-Disposition', 'attachment', filename=filename)
+        msg.attach(attach)
 
     try:
         print("\n正在连接 Gmail SMTP 服务器发送邮件...")
@@ -196,14 +217,17 @@ def send_email_with_md(md_content, date_str):
         server.login(SENDER_EMAIL, APP_PASSWORD)
         server.send_message(msg)
         server.quit()
-        print("✅ HTML 简报已成功发送至你的邮箱！")
+        print("✅ HTML 简报正文及 Markdown 附件已成功发送至你的邮箱！")
     except Exception as e:
         print(f"❌ 邮件发送失败: {e}")
+    finally:
+        if os.path.exists(filename):
+            os.remove(filename)
 
 if __name__ == "__main__":
     print("=== 开始构建全球媒体情报网 (GitHub Actions 环境) ===")
     if not all([SENDER_EMAIL, APP_PASSWORD, DEEPSEEK_API_KEY]):
-        print("❌ 环境变量未正确配置！")
+        print("❌ 环境变量未正确配置！请检查 GitHub Secrets。")
         exit(1)
 
     markdown_data, current_date = fetch_and_format_news()
