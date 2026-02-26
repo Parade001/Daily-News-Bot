@@ -5,6 +5,11 @@ on:
     # 这里的 cron 是 UTC 时间。
     # 0 0 * * * 表示每天 UTC 时间 00:00 执行，即北京时间/东八区早上 08:00，日本时间早上 09:00。
     - cron: '0 0 * * *'
+
+    # 2. 本地代码 Push 时自动触发
+  push:
+    branches:
+    - master  # 这里的 main 要对应你仓库的主分支名称（如果你叫 master 就改为 master）
   workflow_dispatch: # 这个配置允许你在网页上手动点击运行按钮进行测试
 
 jobs:
