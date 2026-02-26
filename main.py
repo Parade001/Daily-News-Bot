@@ -11,18 +11,97 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import markdown
 
-# ================== 核心配置区 (从 GitHub Secrets 读取) ==================
+# ================== 核心配置区 ==================
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 
-# 工业级网络 Session 初始化 (云端直连，无需代理)
 http_session = requests.Session()
 retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[ 500, 502, 503, 504 ])
 adapter = HTTPAdapter(max_retries=retries)
 http_session.mount('http://', adapter)
 http_session.mount('https://', adapter)
+
+# ================== 天气数据获取模块 ==================
+CITIES = {
+    "法国巴黎": {"lat": 48.8566, "lon": 2.3522, "tz": "Europe/Paris"},
+    "湖北武汉": {"lat": 30.5928, "lon": 114.3055, "tz": "Asia/Shanghai"},
+    "湖北汉川": {"lat": 30.6550, "lon": 113.8385, "tz": "Asia/Shanghai"},
+    "广东惠州": {"lat": 23.1115, "lon": 114.4162, "tz": "Asia/Shanghai"}
+}
+
+def get_weather_description(code):
+    """将 WMO 气象代码转换为中文描述"""
+    weather_map = {
+        0: "☀️ 晴朗", 1: "🌤️ 大部晴朗", 2: "⛅ 多云", 3: "☁️ 阴天",
+        45: "🌫️ 雾", 48: "🌫️ 结霜浓雾", 51: "🌦️ 轻微毛毛雨", 53: "🌧️ 毛毛雨",
+        55: "🌧️ 密集毛毛雨", 61: "🌧️ 小雨", 63: "🌧️ 中雨", 65: "🌧️ 大雨",
+        71: "🌨️ 小雪", 73: "🌨️ 中雪", 75: "🌨️ 大雪", 95: "⛈️ 雷暴"
+    }
+    return weather_map.get(code, "☁️ 未知天气")
+
+def fetch_weather_data():
+    """通过 Open-Meteo 获取四个城市的天气及 AQI 数据"""
+    weather_md = "## 🌤️ 重点城市今日及未来天气概览\n\n"
+    weather_md += "| 城市 | 当天核心气象 (实时/体感) | 户外指数 (AQI/紫外线/能见度) | 未来三天趋势预报 |\n"
+    weather_md += "| :--- | :--- | :--- | :--- |\n"
+
+    print("\n=== 开始获取全球气象数据 ===")
+
+    for city, coords in CITIES.items():
+        print(f"正在获取 {city} 的天气数据...")
+        try:
+            # 1. 获取常规气象数据 (包含今日详尽数据和未来趋势)
+            weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={coords['lat']}&longitude={coords['lon']}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,visibility&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max&timezone={coords['tz']}"
+            w_res = http_session.get(weather_url, timeout=10).json()
+
+            # 2. 获取 AQI 数据 (Open-Meteo 的空气质量接口是独立的)
+            aqi_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={coords['lat']}&longitude={coords['lon']}&current=european_aqi&timezone={coords['tz']}"
+            aqi_res = http_session.get(aqi_url, timeout=10).json()
+
+            # 解析实时数据
+            cur = w_res['current']
+            daily = w_res['daily']
+            aqi_val = aqi_res.get('current', {}).get('european_aqi', 'N/A')
+
+            desc = get_weather_description(cur['weather_code'])
+            temp = f"{cur['temperature_2m']}°C"
+            feels = f"{cur['apparent_temperature']}°C"
+            humidity = f"{cur['relative_humidity_2m']}%"
+            # 风速转换为大致的风力等级 (粗略计算: 1m/s ≈ 0.28km/h)
+            wind_speed = cur['wind_speed_10m']
+            wind_scale = f"{wind_speed} km/h"
+            visibility = f"{cur['visibility'] / 1000:.1f} km"
+            uv_max = daily['uv_index_max'][0]
+
+            # 评估 AQI 和 紫外线级别
+            aqi_status = "🟢 优" if isinstance(aqi_val, int) and aqi_val <= 50 else ("🟡 良" if isinstance(aqi_val, int) and aqi_val <= 100 else "🔴 差")
+            uv_status = "高" if uv_max >= 6 else ("中" if uv_max >= 3 else "低")
+
+            # 核心数据排版
+            core_data = f"**{desc}**<br>🌡️ 气温：{temp} (体感 {feels})<br>💧 湿度：{humidity}<br>🌬️ 风速：{wind_scale}"
+            outdoor_data = f"😷 AQI：{aqi_val} ({aqi_status})<br>☀️ 紫外线：{uv_max} ({uv_status})<br>👁️ 能见度：{visibility}"
+
+            # 未来 3 天趋势排版 (保留简洁性，防止表格过载)
+            future_forecast = ""
+            for i in range(1, 4):
+                f_date = daily['time'][i][-5:] # 取日期如 02-27
+                f_desc = get_weather_description(daily['weather_code'][i]).split(" ")[0] # 只取图标
+                f_max = daily['temperature_2m_max'][i]
+                f_min = daily['temperature_2m_min'][i]
+                future_forecast += f"• {f_date}: {f_desc} {f_min}°C ~ {f_max}°C<br>"
+
+            weather_md += f"| **{city}** | {core_data} | {outdoor_data} | {future_forecast} |\n"
+            time.sleep(0.5)
+
+        except Exception as e:
+            print(f"❌ {city} 气象数据获取失败: {e}")
+            weather_md += f"| **{city}** | 气象服务连接异常 | 暂无数据 | 暂无数据 |\n"
+
+    weather_md += "---\n\n"
+    return weather_md
+
 
 # ================== 完整 28 个 RSS 源 ==================
 RSS_SOURCES = {
@@ -99,13 +178,19 @@ def translate_with_deepseek(text):
         print(f"  -> DeepSeek 翻译异常: {str(e)[:50]}...")
         return safe_text
 
-def fetch_and_format_news():
-    # 转换为东八区时间显示
+def fetch_and_format_content():
     tz = datetime.timezone(datetime.timedelta(hours=8))
     today_str = datetime.datetime.now(tz).strftime("%Y-%m-%d")
 
-    md_content = f"# 🌍 全球核心媒体政经与市场简报 ({today_str})\n\n"
-    md_content += "*(本报告由 GitHub Actions 自动抓取并经由 DeepSeek AI 翻译生成)*\n\n"
+    # 1. 组合标题与免责声明
+    md_content = f"# 🌍 全球宏观情报与专属气象简报 ({today_str})\n\n"
+    md_content += "*(本报告由 GitHub Actions 自动构建，融合 Open-Meteo 实时气象及 DeepSeek 翻译引擎)*\n\n"
+
+    # 2. 注入天气模块
+    md_content += fetch_weather_data()
+
+    # 3. 构建新闻模块
+    md_content += "## 📰 核心政经与大宗商品速递\n\n"
     md_content += "| 分类 | 网站 (中英文) | 详细关键词与分类 | 最新中文标题与原文链接 |\n"
     md_content += "| :--- | :--- | :--- | :--- |\n"
 
@@ -117,6 +202,7 @@ def fetch_and_format_news():
         "Accept": "application/rss+xml, application/xml, text/xml"
     }
 
+    print("\n=== 开始获取全球媒体资讯 ===")
     for category, sites in RSS_SOURCES.items():
         for site_info in sites:
             current_site += 1
@@ -124,7 +210,7 @@ def fetch_and_format_news():
             keywords = site_info["keywords"]
             url = site_info["url"]
 
-            print(f"[{current_site}/{total_sites}] 正在抓取: {site_name} ...")
+            print(f"[{current_site}/{total_sites}] 正在抓取资讯: {site_name} ...")
 
             try:
                 response = http_session.get(url, headers=headers, timeout=20)
@@ -159,15 +245,11 @@ def fetch_and_format_news():
     return md_content, today_str
 
 def send_email_with_md(md_content, date_str):
-    # ==========================================
-    # 核心修复：使用 mixed 作为根消息，支持并列展示正文和附件
-    # ==========================================
     msg = MIMEMultipart('mixed')
     msg['From'] = SENDER_EMAIL
     msg['To'] = RECEIVER_EMAIL
-    msg['Subject'] = f"📊 核心政经与大宗商品简报 - {date_str}"
+    msg['Subject'] = f"📊 全球宏观情报与专属气象简报 - {date_str}"
 
-    # 创建一个 alternative 容器用于装载 HTML 和 纯文本正文
     alt_part = MIMEMultipart('alternative')
 
     html_body = markdown.markdown(md_content, extensions=['tables'])
@@ -176,12 +258,14 @@ def send_email_with_md(md_content, date_str):
     <head>
     <style>
       body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; }}
-      table {{ border-collapse: collapse; width: 100%; max-width: 1200px; margin-top: 20px; }}
+      h2 {{ color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 5px; margin-top: 30px; }}
+      table {{ border-collapse: collapse; width: 100%; max-width: 1200px; margin-top: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
       th, td {{ border: 1px solid #e0e0e0; text-align: left; padding: 12px; vertical-align: top; }}
       th {{ background-color: #f8f9fa; font-weight: bold; color: #444; }}
       a {{ color: #1a73e8; text-decoration: none; font-weight: 500; }}
       a:hover {{ text-decoration: underline; }}
       td:nth-child(4) {{ min-width: 300px; }}
+      .weather-table th {{ background-color: #e3f2fd; color: #0277bd; }}
     </style>
     </head>
     <body>
@@ -195,12 +279,8 @@ def send_email_with_md(md_content, date_str):
     alt_part.attach(part1)
     alt_part.attach(part2)
 
-    # 将包含排版的正文放入根消息
     msg.attach(alt_part)
 
-    # ==========================================
-    # 生成并挂载 Markdown 附件
-    # ==========================================
     filename = f"Global_Intelligence_{date_str}.md"
     with open(filename, "w", encoding="utf-8") as f:
         f.write(md_content)
@@ -225,10 +305,10 @@ def send_email_with_md(md_content, date_str):
             os.remove(filename)
 
 if __name__ == "__main__":
-    print("=== 开始构建全球媒体情报网 (GitHub Actions 环境) ===")
+    print("=== 开始构建智能化日常简报 (GitHub Actions 环境) ===")
     if not all([SENDER_EMAIL, APP_PASSWORD, DEEPSEEK_API_KEY]):
         print("❌ 环境变量未正确配置！请检查 GitHub Secrets。")
         exit(1)
 
-    markdown_data, current_date = fetch_and_format_news()
-    send_email_with_md(markdown_data, current_date)
+    final_md_data, current_date = fetch_and_format_content()
+    send_email_with_md(final_md_data, current_date)
