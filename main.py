@@ -11,19 +11,20 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import markdown
 
-# ================== 核心配置区 ==================
+# ================== 核心配置区 (从 GitHub Secrets 读取) ==================
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 
+# 工业级网络 Session 初始化
 http_session = requests.Session()
-retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[ 500, 502, 503, 504 ])
+retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
 adapter = HTTPAdapter(max_retries=retries)
 http_session.mount('http://', adapter)
 http_session.mount('https://', adapter)
 
-# ================== 天气数据获取模块 ==================
+# ================== 天气与生活指数模块 ==================
 CITIES = {
     "法国巴黎": {"lat": 48.8566, "lon": 2.3522, "tz": "Europe/Paris"},
     "湖北武汉": {"lat": 30.5928, "lon": 114.3055, "tz": "Asia/Shanghai"},
@@ -32,76 +33,54 @@ CITIES = {
 }
 
 def get_weather_description(code):
-    """将 WMO 气象代码转换为中文描述"""
     weather_map = {
         0: "☀️ 晴朗", 1: "🌤️ 大部晴朗", 2: "⛅ 多云", 3: "☁️ 阴天",
         45: "🌫️ 雾", 48: "🌫️ 结霜浓雾", 51: "🌦️ 轻微毛毛雨", 53: "🌧️ 毛毛雨",
         55: "🌧️ 密集毛毛雨", 61: "🌧️ 小雨", 63: "🌧️ 中雨", 65: "🌧️ 大雨",
         71: "🌨️ 小雪", 73: "🌨️ 中雪", 75: "🌨️ 大雪", 95: "⛈️ 雷暴"
     }
-    return weather_map.get(code, "☁️ 未知天气")
+    return weather_map.get(code, "☁️ 未知")
 
 def fetch_weather_data():
-    """通过 Open-Meteo 获取四个城市的天气及 AQI 数据"""
-    weather_md = "## 🌤️ 重点城市今日及未来天气概览\n\n"
-    weather_md += "| 城市 | 当天核心气象 (实时/体感) | 户外指数 (AQI/紫外线/能见度) | 未来三天趋势预报 |\n"
-    weather_md += "| :--- | :--- | :--- | :--- |\n"
-
-    print("\n=== 开始获取全球气象数据 ===")
+    weather_md = "## 🌤️ 重点城市今日天气与生活指数\n\n"
+    weather_md += "| 城市 | 今日核心气象 | 户外指数 | 生活建议 (六项指标) | 未来三天趋势 |\n"
+    weather_md += "| :--- | :--- | :--- | :--- | :--- |\n"
 
     for city, coords in CITIES.items():
-        print(f"正在获取 {city} 的天气数据...")
         try:
-            # 1. 获取常规气象数据 (包含今日详尽数据和未来趋势)
-            weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={coords['lat']}&longitude={coords['lon']}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,visibility&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max&timezone={coords['tz']}"
-            w_res = http_session.get(weather_url, timeout=10).json()
+            w_res = http_session.get(f"https://api.open-meteo.com/v1/forecast?latitude={coords['lat']}&longitude={coords['lon']}&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,visibility&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max&timezone={coords['tz']}", timeout=15).json()
+            aqi_res = http_session.get(f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={coords['lat']}&longitude={coords['lon']}&current=european_aqi&timezone={coords['tz']}", timeout=15).json()
 
-            # 2. 获取 AQI 数据 (Open-Meteo 的空气质量接口是独立的)
-            aqi_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={coords['lat']}&longitude={coords['lon']}&current=european_aqi&timezone={coords['tz']}"
-            aqi_res = http_session.get(aqi_url, timeout=10).json()
-
-            # 解析实时数据
             cur = w_res['current']
             daily = w_res['daily']
             aqi_val = aqi_res.get('current', {}).get('european_aqi', 'N/A')
 
-            desc = get_weather_description(cur['weather_code'])
-            temp = f"{cur['temperature_2m']}°C"
-            feels = f"{cur['apparent_temperature']}°C"
-            humidity = f"{cur['relative_humidity_2m']}%"
-            # 风速转换为大致的风力等级 (粗略计算: 1m/s ≈ 0.28km/h)
-            wind_speed = cur['wind_speed_10m']
-            wind_scale = f"{wind_speed} km/h"
-            visibility = f"{cur['visibility'] / 1000:.1f} km"
-            uv_max = daily['uv_index_max'][0]
+            # 指标计算
+            atemp = cur['apparent_temperature']
+            dress = "👕 清凉短袖" if atemp >= 28 else ("🧥 适宜薄外套" if atemp >= 18 else "🧣 注意保暖")
+            uv = daily['uv_index_max'][0]
+            sun = "🧴 无需防晒" if uv < 3 else "☀️ 建议防晒"
+            code = cur['weather_code']
+            sport = "🏃 宜户外运动" if (isinstance(aqi_val, int) and aqi_val <= 100 and code <= 2) else "🏠 建议室内"
+            will_rain = any(c >= 51 for c in daily['weather_code'][:4])
+            car = "🚗 宜洗车" if not will_rain else "🚿 不宜洗车"
+            umbrella = "☂️ 有雨带伞" if code >= 51 else "👓 无需带伞"
+            temp_diff = daily['temperature_2m_max'][0] - daily['temperature_2m_min'][0]
+            cold = "🤒 较易感冒" if (temp_diff > 10 or atemp < 8) else "✅ 风险较低"
 
-            # 评估 AQI 和 紫外线级别
-            aqi_status = "🟢 优" if isinstance(aqi_val, int) and aqi_val <= 50 else ("🟡 良" if isinstance(aqi_val, int) and aqi_val <= 100 else "🔴 差")
-            uv_status = "高" if uv_max >= 6 else ("中" if uv_max >= 3 else "低")
+            core = f"**{get_weather_description(code)}**<br>🌡️ {cur['temperature_2m']}°C<br>🌬️ {cur['wind_speed_10m']}km/h"
+            outdoor = f"😷 AQI: {aqi_val}<br>☀️ UV: {uv}<br>👁️ {cur['visibility']/1000:.1f}km"
+            advice = f"{dress}<br>{sun}<br>{sport}<br>{car}<br>{umbrella}<br>{cold}"
 
-            # 核心数据排版
-            core_data = f"**{desc}**<br>🌡️ 气温：{temp} (体感 {feels})<br>💧 湿度：{humidity}<br>🌬️ 风速：{wind_scale}"
-            outdoor_data = f"😷 AQI：{aqi_val} ({aqi_status})<br>☀️ 紫外线：{uv_max} ({uv_status})<br>👁️ 能见度：{visibility}"
-
-            # 未来 3 天趋势排版 (保留简洁性，防止表格过载)
-            future_forecast = ""
+            future = ""
             for i in range(1, 4):
-                f_date = daily['time'][i][-5:] # 取日期如 02-27
-                f_desc = get_weather_description(daily['weather_code'][i]).split(" ")[0] # 只取图标
-                f_max = daily['temperature_2m_max'][i]
-                f_min = daily['temperature_2m_min'][i]
-                future_forecast += f"• {f_date}: {f_desc} {f_min}°C ~ {f_max}°C<br>"
+                future += f"• {daily['time'][i][-5:]}: {get_weather_description(daily['weather_code'][i]).split(' ')[0]} {daily['temperature_2m_min'][i]}~{daily['temperature_2m_max'][i]}°C<br>"
 
-            weather_md += f"| **{city}** | {core_data} | {outdoor_data} | {future_forecast} |\n"
-            time.sleep(0.5)
-
-        except Exception as e:
-            print(f"❌ {city} 气象数据获取失败: {e}")
-            weather_md += f"| **{city}** | 气象服务连接异常 | 暂无数据 | 暂无数据 |\n"
-
-    weather_md += "---\n\n"
-    return weather_md
-
+            weather_md += f"| **{city}** | {core} | {outdoor} | {advice} | {future} |\n"
+            time.sleep(1)
+        except:
+            weather_md += f"| **{city}** | 接口超时 | - | - | - |\n"
+    return weather_md + "\n---\n"
 
 # ================== 完整 28 个 RSS 源 ==================
 RSS_SOURCES = {
@@ -135,7 +114,7 @@ RSS_SOURCES = {
     ],
     "英国/欧洲媒体": [
         {"site": "Financial Times (金融时报)", "keywords": "欧洲央行, 跨国金融", "url": "https://www.ft.com/news-feed?format=rss"},
-        {"site": "The Guardian (卫报)", "keywords": "左翼视角, 气候与人权", "url": "https://www.theguardian.com/world/rss"},
+        {"site": "The Guardian (卫卫报)", "keywords": "左翼视角, 气候与人权", "url": "https://www.theguardian.com/world/rss"},
         {"site": "Der Spiegel (明镜周刊-德语区)", "keywords": "欧盟政策, 德国工业", "url": "https://www.spiegel.de/international/index.rss"},
         {"site": "Le Monde (世界报-法语区)", "keywords": "法国政局, 欧洲防务", "url": "https://www.lemonde.fr/en/rss/une.xml"},
     ],
@@ -148,48 +127,34 @@ RSS_SOURCES = {
 }
 
 def translate_with_deepseek(text):
-    if not text:
-        return "无标题"
+    if not text: return "无标题"
+    headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
 
-    safe_text = text.replace('|', '-').replace('\n', ' ')
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    # 修改指令：增加“严禁换行、禁止摘要、严禁输出列表”的硬性要求
     payload = {
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "你是一个专业的国际政经与金融翻译员。请将英文新闻标题翻译成地道的简体中文。直接输出翻译结果，不要多余解释。"},
-            {"role": "user", "content": safe_text}
+            {"role": "system", "content": "你是一个专业的国际政经翻译。请将输入的新闻标题翻译为地道的简体中文。要求：1. 严禁输出任何换行符或回车；2. 严禁进行摘要、扩写或生成列表，仅保留翻译；3. 直接输出翻译结果。"},
+            {"role": "user", "content": text}
         ],
         "temperature": 0.1
     }
 
     try:
-        response = requests.post(
-            "https://api.deepseek.com/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=20
-        )
-        response.raise_for_status()
-        return response.json()['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        print(f"  -> DeepSeek 翻译异常: {str(e)[:50]}...")
-        return safe_text
+        response = requests.post("https://api.deepseek.com/chat/completions", headers=headers, json=payload, timeout=20)
+        result = response.json()['choices'][0]['message']['content'].strip()
+        # 二次保险：强行替换掉结果中的所有真实换行符
+        return result.replace('\n', ' ').replace('\r', ' ').replace('|', '-')
+    except:
+        return text.replace('|', '-')
 
 def fetch_and_format_content():
     tz = datetime.timezone(datetime.timedelta(hours=8))
     today_str = datetime.datetime.now(tz).strftime("%Y-%m-%d")
 
-    # 1. 组合标题与免责声明
     md_content = f"# 🌍 全球宏观情报与专属气象简报 ({today_str})\n\n"
-    md_content += "*(本报告由 GitHub Actions 自动构建，融合 Open-Meteo 实时气象及 DeepSeek 翻译引擎)*\n\n"
-
-    # 2. 注入天气模块
     md_content += fetch_weather_data()
 
-    # 3. 构建新闻模块
     md_content += "## 📰 核心政经与大宗商品速递\n\n"
     md_content += "| 分类 | 网站 (中英文) | 详细关键词与分类 | 最新中文标题与原文链接 |\n"
     md_content += "| :--- | :--- | :--- | :--- |\n"
@@ -197,12 +162,6 @@ def fetch_and_format_content():
     total_sites = sum(len(sites) for sites in RSS_SOURCES.values())
     current_site = 0
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/rss+xml, application/xml, text/xml"
-    }
-
-    print("\n=== 开始获取全球媒体资讯 ===")
     for category, sites in RSS_SOURCES.items():
         for site_info in sites:
             current_site += 1
@@ -210,105 +169,69 @@ def fetch_and_format_content():
             keywords = site_info["keywords"]
             url = site_info["url"]
 
-            print(f"[{current_site}/{total_sites}] 正在抓取资讯: {site_name} ...")
-
+            print(f"[{current_site}/{total_sites}] 抓取资讯: {site_name}")
             try:
-                response = http_session.get(url, headers=headers, timeout=20)
+                res = http_session.get(url, timeout=15)
+                feed = feedparser.parse(res.content)
+                news_links_html = ""
+                # 仅取前 3 条新闻，确保表格高度可控
+                for entry in feed.entries[:3]:
+                    original_title = entry.get('title', '无标题')
+                    link = entry.get('link', '#')
+                    # 获取翻译，内部已处理掉换行符
+                    zh_title = translate_with_deepseek(original_title)
 
-                if response.status_code == 403:
-                    md_content += f"| **{category}** | {site_name} | *{keywords}* | 被网站防火墙拦截 (403) |\n"
-                    continue
+                    # 按照图1样式：圆点 + 蓝色链接，使用 <br> 进行单元格内换行（不会破坏表格行）
+                    news_links_html += f"• [{zh_title}]({link})<br><br>"
 
-                response.raise_for_status()
-                feed = feedparser.parse(response.content)
-                top_entries = feed.entries[:3]
-
-                if not top_entries:
-                    md_content += f"| **{category}** | {site_name} | *{keywords}* | 网站无更新 |\n"
-                else:
-                    news_links_html = ""
-                    for entry in top_entries:
-                        original_title = entry.get('title', '无标题')
-                        link = entry.get('link', '#')
-                        zh_title = translate_with_deepseek(original_title)
-                        news_links_html += f"• [{zh_title}]({link})<br><br>"
-
-                    md_content += f"| **{category}** | {site_name} | *{keywords}* | {news_links_html} |\n"
-
+                # 拼接成 Markdown 表格行，这一行必须是完整的
+                md_content += f"| **{category}** | {site_name} | *{keywords}* | {news_links_html} |\n"
                 time.sleep(1)
-
-            except requests.exceptions.RequestException as e:
-                md_content += f"| **{category}** | {site_name} | *{keywords}* | 节点连接超时 |\n"
-            except Exception as e:
-                md_content += f"| **{category}** | {site_name} | *{keywords}* | 解析异常 |\n"
+            except:
+                md_content += f"| **{category}** | {site_name} | *{keywords}* | [网络抓取暂时失败] |\n"
 
     return md_content, today_str
 
 def send_email_with_md(md_content, date_str):
     msg = MIMEMultipart('mixed')
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = RECEIVER_EMAIL
-    msg['Subject'] = f"📊 全球宏观情报与专属气象简报 - {date_str}"
+    msg['From'], msg['To'], msg['Subject'] = SENDER_EMAIL, RECEIVER_EMAIL, f"📊 全球宏观情报与气象简报 - {date_str}"
 
     alt_part = MIMEMultipart('alternative')
-
     html_body = markdown.markdown(md_content, extensions=['tables'])
     html_template = f"""
-    <html>
-    <head>
-    <style>
-      body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; }}
-      h2 {{ color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 5px; margin-top: 30px; }}
-      table {{ border-collapse: collapse; width: 100%; max-width: 1200px; margin-top: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-      th, td {{ border: 1px solid #e0e0e0; text-align: left; padding: 12px; vertical-align: top; }}
+    <html><head><style>
+      body {{ font-family: sans-serif; line-height: 1.6; color: #333; }}
+      table {{ border-collapse: collapse; width: 100%; margin-top: 20px; font-size: 13px; }}
+      th, td {{ border: 1px solid #e0e0e0; text-align: left; padding: 10px; vertical-align: top; }}
       th {{ background-color: #f8f9fa; font-weight: bold; color: #444; }}
       a {{ color: #1a73e8; text-decoration: none; font-weight: 500; }}
-      a:hover {{ text-decoration: underline; }}
-      td:nth-child(4) {{ min-width: 300px; }}
-      .weather-table th {{ background-color: #e3f2fd; color: #0277bd; }}
-    </style>
-    </head>
-    <body>
-      {html_body}
-    </body>
-    </html>
+      td:nth-child(4) {{ min-width: 320px; }}
+    </style></head>
+    <body>{html_body}</body></html>
     """
 
-    part1 = MIMEText(md_content, 'plain', 'utf-8')
-    part2 = MIMEText(html_template, 'html', 'utf-8')
-    alt_part.attach(part1)
-    alt_part.attach(part2)
-
+    alt_part.attach(MIMEText(md_content, 'plain', 'utf-8'))
+    alt_part.attach(MIMEText(html_template, 'html', 'utf-8'))
     msg.attach(alt_part)
 
-    filename = f"Global_Intelligence_{date_str}.md"
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(md_content)
-
+    filename = f"Report_{date_str}.md"
+    with open(filename, "w", encoding="utf-8") as f: f.write(md_content)
     with open(filename, "rb") as f:
         attach = MIMEApplication(f.read(), _subtype="markdown")
         attach.add_header('Content-Disposition', 'attachment', filename=filename)
         msg.attach(attach)
 
     try:
-        print("\n正在连接 Gmail SMTP 服务器发送邮件...")
         server = smtplib.SMTP('smtp.gmail.com', 587, timeout=30)
         server.starttls()
         server.login(SENDER_EMAIL, APP_PASSWORD)
         server.send_message(msg)
         server.quit()
-        print("✅ HTML 简报正文及 Markdown 附件已成功发送至你的邮箱！")
-    except Exception as e:
-        print(f"❌ 邮件发送失败: {e}")
+        print("✅ 简报发送成功！")
+    except Exception as e: print(f"❌ 失败: {e}")
     finally:
-        if os.path.exists(filename):
-            os.remove(filename)
+        if os.path.exists(filename): os.remove(filename)
 
 if __name__ == "__main__":
-    print("=== 开始构建智能化日常简报 (GitHub Actions 环境) ===")
-    if not all([SENDER_EMAIL, APP_PASSWORD, DEEPSEEK_API_KEY]):
-        print("❌ 环境变量未正确配置！请检查 GitHub Secrets。")
-        exit(1)
-
-    final_md_data, current_date = fetch_and_format_content()
-    send_email_with_md(final_md_data, current_date)
+    data, date = fetch_and_format_content()
+    send_email_with_md(data, date)
