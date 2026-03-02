@@ -28,9 +28,10 @@ http_session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/rss+xml, application/xml, text/xml, */*",
     "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-    "Referer": "https://www.google.com/",  # 模拟从搜索引擎跳转，能绕过很多拦截
+    "Referer": "https://www.google.com/",
     "Cache-Control": "max-age=0"
 })
+
 # ================== 天气与生活指数模块 ==================
 CITIES = {
     "法国巴黎": {"lat": 48.8566, "lon": 2.3522, "tz": "Europe/Paris"},
@@ -62,7 +63,6 @@ def fetch_weather_data():
             daily = w_res['daily']
             aqi_val = aqi_res.get('current', {}).get('european_aqi', 'N/A')
 
-            # 指标计算
             atemp = cur['apparent_temperature']
             dress = "👕 清凉短袖" if atemp >= 28 else ("🧥 适宜薄外套" if atemp >= 18 else "🧣 注意保暖")
             uv = daily['uv_index_max'][0]
@@ -89,28 +89,7 @@ def fetch_weather_data():
             weather_md += f"| **{city}** | 接口超时 | - | - | - |\n"
     return weather_md + "\n---\n"
 
-def fetch_rss_content(url):
-    """
-    专门解决机器之心、The Verge 等源解析失败的增强型函数
-    """
-    try:
-        # 核心：必须用 http_session 发起请求，带上 headers
-        response = http_session.get(url, timeout=20)
-        response.encoding = 'utf-8' # 强制编码，防止 text.txt 里的乱码
-
-        # 将请求到的文本交给 feedparser 解析
-        feed = feedparser.parse(response.text)
-
-        # 兼容性检查：如果 feedparser 没解析出标题，尝试从 channel 里找
-        if not feed.entries:
-            # 有些源格式特殊，需要重新解析
-            feed = feedparser.parse(response.content)
-
-        return feed.entries
-    except Exception as e:
-        print(f"抓取失败 {url}: {e}")
-        return []
-# ================== 完整 28 个 RSS 源 ==================
+# ================== 完整 RSS 源 ==================
 RSS_SOURCES = {
     "国际/美国主流媒体": [
         {"site": "The New York Times (纽约时报)", "keywords": "美国政治, 国际关系", "url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"},
@@ -129,7 +108,6 @@ RSS_SOURCES = {
         {"site": "MarketWatch", "keywords": "美股盘前, 市场快讯", "url": "http://feeds.marketwatch.com/marketwatch/topstories/"},
         {"site": "Yahoo Finance (雅虎财经)", "keywords": "美股大盘, 宏观经济", "url": "https://finance.yahoo.com/news/rss"},
         {"site": "CNBC", "keywords": "投资策略, 商业巨头", "url": "https://www.cnbc.com/id/10000664/device/rss/rss.html"},
-        {"site": "MarketWatch", "keywords": "美股盘前, 市场快讯", "url": "http://feeds.marketwatch.com/marketwatch/topstories/"},
     ],
     "科技/学术": [
         {"site": "Nature (自然)", "keywords": "硬核科学, 前沿发现", "url": "https://www.nature.com/nature.rss"},
@@ -155,13 +133,8 @@ RSS_SOURCES = {
         {"site": "Nikkei (日经新闻)", "keywords": "日本央行, 半导体供应链", "url": "https://asia.nikkei.com/rss/feed/nar"},
         {"site": "The Sydney Morning Herald", "keywords": "澳洲矿业, 亚太贸易", "url": "https://www.smh.com.au/rss/world.xml"},
         {"site": "Times of India (印度时报)", "keywords": "新兴市场, 印度经济", "url": "https://timesofindia.indiatimes.com/rssfeeds/296589292.cms"},
-        {"site": "South China Morning Post (南华早报)", "keywords": "中国外交, 宏观经济", "url": "https://www.scmp.com/rss/91/feed"},
         {"site": "TechCrunch", "keywords": "初创企业, 风投动态", "url": "https://techcrunch.com/feed/"},
         {"site": "The Verge", "keywords": "消费电子, 科技政策", "url": "https://www.theverge.com/rss/index.xml"},
-    ],
-    "股市实战/宏观": [
-        {"site": "Seeking Alpha", "keywords": "美股研报, 个股策略", "url": "https://seekingalpha.com/market_currents.xml"},
-        {"site": "Investing.com", "keywords": "宏观数据, 利率前瞻", "url": "https://www.investing.com/rss/news.rss"},
     ],
     "军事/地缘博弈": [
         {"site": "Defense News", "keywords": "全球防务, 军工产业", "url": "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/"},
@@ -176,8 +149,7 @@ RSS_SOURCES = {
     "AI/大模型/前沿科技": [
         {"site": "Hugging Face", "keywords": "开源模型, 论文复现", "url": "https://huggingface.co/blog/feed.xml"},
         {"site": "OpenAI Blog", "keywords": "AGI, 风向标", "url": "https://openai.com/news/rss.xml"},
-        # VentureBeat 的 AI 频道是目前全球公认最难封杀的 RSS
-        {"site": "The Decoder", "keywords": "大模型, 行业前瞻", "url": "https://the-decoder.com/feed/"}, # 专门做AI的，非常稳
+        {"site": "The Decoder", "keywords": "大模型, 行业前瞻", "url": "https://the-decoder.com/feed/"},
         {"site": "Artificial Intelligence News", "keywords": "AI技术, 落地", "url": "https://www.artificialintelligence-news.com/feed/"},
         {"site": "VentureBeat AI", "keywords": "大模型, 商业落地", "url": "https://venturebeat.com/category/ai/feed/"},
         {"site": "Wired Science", "keywords": "前沿科学, 生物技术", "url": "https://www.wired.com/feed/category/science/latest/rss"},
@@ -186,9 +158,7 @@ RSS_SOURCES = {
         {"site": "IEEE Spectrum", "keywords": "半导体, 机器人工程", "url": "https://spectrum.ieee.org/rss/fulltext"},
     ],
     "科幻/影视/深度评论": [
-        # 完美的沙丘/科幻深度源，来自 Tor (世界顶级科幻出版商)
         {"site": "Tor.com (科幻专栏)", "keywords": "硬核科幻, 史诗评论", "url": "https://www.reactormag.com/feed/"},
-        # 换用 Polygon 的影视区，比 The Verge 对爬虫更友好
         {"site": "Den of Geek", "keywords": "极客文化, 影视彩蛋", "url": "https://www.denofgeek.com/feed/"},
     ]
 }
@@ -197,7 +167,6 @@ def translate_with_deepseek(text):
     if not text: return "无标题"
     headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
 
-    # 修改指令：增加“严禁换行、禁止摘要、严禁输出列表”的硬性要求
     payload = {
         "model": "deepseek-chat",
         "messages": [
@@ -210,7 +179,6 @@ def translate_with_deepseek(text):
     try:
         response = requests.post("https://api.deepseek.com/chat/completions", headers=headers, json=payload, timeout=20)
         result = response.json()['choices'][0]['message']['content'].strip()
-        # 二次保险：强行替换掉结果中的所有真实换行符
         return result.replace('\n', ' ').replace('\r', ' ').replace('|', '-')
     except:
         return text.replace('|', '-')
@@ -239,33 +207,19 @@ def fetch_and_format_content():
             print(f"[{current_site}/{total_sites}] 抓取资讯: {site_name}")
             try:
                 res = http_session.get(url, timeout=15)
-
-                # 1. 核心修复：坚决使用 res.content (原始字节流) 喂给 feedparser
                 feed = feedparser.parse(res.content)
 
-                # 2. 如果标准解析失败，尝试暴力正则提取 (专治各种不规范的 RSS)
+                # 标准化解析，如果无数据直接跳过即可，抛弃暴力的正则提取
                 if not feed.entries:
-                    import re
-                    # 尝试提取 <title> 和 <link>
-                    html_text = res.text
-                    titles = re.findall(r'<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>', html_text, re.IGNORECASE)
-                    links = re.findall(r'<link>(.*?)</link>', html_text, re.IGNORECASE)
-
-                    # 过滤掉属于 <channel> 的全局标题 (通常是前1-2个)
-                    # text.txt 显示全局标题为 <title>Synced</title> 和 <link>https://syncedreview.com</link>
-                    if len(titles) > 1 and len(links) > 1:
-                        titles = titles[1:]
-                        links = links[1:]
-
-                    # 手动构造前3条 entry 字典
-                    feed.entries = [{"title": t, "link": l} for t, l in zip(titles, links)]
+                    md_content += f"| **{category}** | {site_name} | *{keywords}* | [暂无更新或解析失败] |\n"
+                    continue
 
                 news_links_html = ""
                 # 仅取前 3 条新闻
                 for entry in feed.entries[:3]:
-                    # 字典取值改为兼容模式
-                    original_title = entry.get('title', '无标题') if isinstance(entry, dict) else entry.title
-                    link = entry.get('link', '#') if isinstance(entry, dict) else entry.link
+                    # 抛弃旧的字典兼容模式，直接使用标准的 feedparser 对象属性
+                    original_title = getattr(entry, 'title', '无标题')
+                    link = getattr(entry, 'link', '#')
 
                     zh_title = translate_with_deepseek(original_title)
                     news_links_html += f"• [{zh_title}]({link})<br><br>"
@@ -316,7 +270,8 @@ def send_email_with_md(md_content, date_str):
         server.send_message(msg)
         server.quit()
         print("✅ 简报发送成功！")
-    except Exception as e: print(f"❌ 失败: {e}")
+    except Exception as e:
+        print(f"❌ 失败: {e}")
     finally:
         if os.path.exists(filename): os.remove(filename)
 
