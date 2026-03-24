@@ -3,8 +3,8 @@ name: Daily Global News Scraper
 on:
   schedule:
     # 这里的 cron 是 UTC 时间。
-    # 0 0 * * * 表示每天 UTC 时间 00:00 执行，即北京时间/东八区早上 08:00，日本时间早上 09:00。
-    - cron: '13 23 * * *'
+    # 北京时间 06:30 执行 = UTC 时间 22:30
+    - cron: '30 22 * * *'
 
     # 2. 本地代码 Push 时自动触发
   push:
@@ -35,4 +35,5 @@ jobs:
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
           RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python main.py
