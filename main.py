@@ -17,6 +17,7 @@ SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")
 RECEIVER_EMAIL = os.environ.get("RECEIVER_EMAIL")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+FRED_API_KEY = os.environ.get("FRED_API_KEY")
 
 def load_config():
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json'), 'r', encoding='utf-8') as f:
