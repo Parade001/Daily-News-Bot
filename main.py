@@ -61,7 +61,7 @@ if __name__ == "__main__":
 
     # 分别获取各模块数据
     weather_data = fetch_weather_data(config['cities'])
-    macro_data = fetch_macro_indicators()
+    macro_data = fetch_macro_indicators(FRED_API_KEY)
     rss_data = fetch_rss_news(config['rss_sources'], DEEPSEEK_API_KEY)
 
     # 2. 记录数据抓取结束时间，并计算耗时
