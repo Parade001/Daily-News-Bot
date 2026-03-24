@@ -27,9 +27,7 @@ def load_config():
         return json.load(f)
 
 def send_email(md_content, date_str):
-    """
-    负责将 Markdown 转换为 HTML，并同时作为正文和附件发送
-    """
+    """负责将 Markdown 转换为 HTML，并同时作为正文和附件发送"""
     msg = MIMEMultipart('mixed')
     msg['From'] = SENDER_EMAIL
     msg['To'] = RECEIVER_EMAIL
@@ -56,16 +54,14 @@ def send_email(md_content, date_str):
     # 3. 核心修复：生成并挂载 Markdown 附件
     filename = f"Report_{date_str}.md"
     try:
-        # 将内容写入本地临时文件
         with open(filename, "w", encoding="utf-8") as f: 
             f.write(md_content)
-        # 读取本地文件并挂载为附件
         with open(filename, "rb") as f:
             attach = MIMEApplication(f.read(), _subtype="markdown")
             attach.add_header('Content-Disposition', 'attachment', filename=filename)
             msg.attach(attach)
     except Exception as e:
-        print(f"⚠️ 附件生成或挂载失败，但不影响正文发送: {e}")
+        print(f"⚠️ 附件挂载失败: {e}")
 
     # 4. 发送邮件网络请求
     try:
@@ -76,44 +72,29 @@ def send_email(md_content, date_str):
         server.quit()
         print("✅ 简报与附件发送成功！")
     except Exception as e: 
-        print(f"❌ 邮件发送彻底失败: {e}")
+        print(f"❌ 邮件发送失败: {e}")
     finally:
-        # 工程化：无论成功失败，必须清理 Actions 服务器上的临时文件，防止污染
-        if os.path.exists(filename): 
-            os.remove(filename)
+        # 清理 Actions 服务器上的临时文件
+        if os.path.exists(filename): os.remove(filename)
 
 if __name__ == "__main__":
-    # 1. 记录系统启动时间
     start_time = time.time()
-    
-    # 2. 初始化环境与时间戳
     config = load_config()
-    # 强制使用东八区（北京时间）生成日期字符串
     today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d")
     
-    # 3. 核心调度：按顺序抓取三大模块
     print("⏳ 正在抓取天气数据...")
     weather_data = fetch_weather_data(config['cities'])
     
     print("⏳ 正在运行宏观量化引擎...")
-    # 注意：此处必须传入 FRED_API_KEY
     macro_data = fetch_macro_indicators(FRED_API_KEY) 
     
     print("⏳ 正在抓取并翻译全球 RSS 新闻...")
     rss_data = fetch_rss_news(config['rss_sources'], DEEPSEEK_API_KEY)
     
-    # 4. 计算耗时
-    end_time = time.time()
-    elapsed_seconds = end_time - start_time
+    elapsed_seconds = time.time() - start_time
     
-    # 5. 组装最终 Markdown 文本
-    # 使用内联 HTML 控制耗时文字的样式，避免被 Markdown 默认的 # 标签放大加粗
     final_report = f"# 🌍 全球宏观情报与专属气象简报 ({today}) <span style='font-size: 14px; font-weight: normal; font-style: italic; color: #666;'> (本次执行用时: {elapsed_seconds:.1f} 秒)</span>\n\n"
+    final_report += weather_data + macro_data + rss_data
     
-    final_report += weather_data
-    final_report += macro_data
-    final_report += rss_data
-    
-    # 6. 触发邮件发送
     print("⏳ 正在打包并发送邮件...")
     send_email(final_report, today)
