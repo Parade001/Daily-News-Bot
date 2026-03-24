@@ -1,0 +1,80 @@
+{
+  "cities": {
+    "法国巴黎": {"lat": 48.8566, "lon": 2.3522, "tz": "Europe/Paris"},
+    "湖北武汉": {"lat": 30.5928, "lon": 114.3055, "tz": "Asia/Shanghai"},
+    "湖北汉川": {"lat": 30.6550, "lon": 113.8385, "tz": "Asia/Shanghai"},
+    "广东惠州": {"lat": 23.1115, "lon": 114.4162, "tz": "Asia/Shanghai"}
+  },
+  "rss_sources": {
+    "国际/美国主流媒体": [
+      {"site": "The New York Times (纽约时报)", "keywords": "美国政治, 国际关系", "url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"},
+      {"site": "The Washington Post (华盛顿邮报)", "keywords": "华盛顿内幕, 全球视野", "url": "https://feeds.washingtonpost.com/rss/world"},
+      {"site": "The Washington Post (华盛顿邮报)", "keywords": "商业新闻 (Business)", "url": "https://feeds.a.dj.com/rss/WSJcomUSBusiness.xml"},
+      {"site": "The Washington Post (华盛顿邮报)", "keywords": "市场新闻 (Markets)", "url": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"},
+      {"site": "CNN", "keywords": "突发新闻, 地缘冲突", "url": "http://rss.cnn.com/rss/edition_world.rss"},
+      {"site": "Fox News (福克斯新闻)", "keywords": "保守派视角, 美国内政", "url": "http://feeds.foxnews.com/foxnews/world"},
+      {"site": "Los Angeles Times (洛杉矶时报)", "keywords": "美国西海岸, 亚太焦点", "url": "https://www.latimes.com/world/rss2.0.xml"},
+      {"site": "NPR (国家公共广播电台)", "keywords": "美国内政, 国际时事", "url": "https://feeds.npr.org/1004/rss.xml"}
+    ],
+    "商业/财经": [
+      {"site": "Bloomberg (彭博社)", "keywords": "大宗商品, 贵金属, 美联储", "url": "https://feeds.bloomberg.com/markets/news.rss"},
+      {"site": "Seeking Alpha (美股投研)", "keywords": "个股异动, 市场情绪", "url": "https://seekingalpha.com/market_currents.xml"},
+      {"site": "Forbes (福布斯)", "keywords": "财富管理, 商业领袖", "url": "https://www.forbes.com/business/feed/"},
+      {"site": "MarketWatch", "keywords": "美股盘前, 市场快讯", "url": "http://feeds.marketwatch.com/marketwatch/topstories/"},
+      {"site": "Yahoo Finance (雅虎财经)", "keywords": "美股大盘, 宏观经济", "url": "https://finance.yahoo.com/news/rss"},
+      {"site": "CNBC", "keywords": "投资策略, 商业巨头", "url": "https://www.cnbc.com/id/10000664/device/rss/rss.html"}
+    ],
+    "科技/学术": [
+      {"site": "Nature (自然)", "keywords": "硬核科学, 前沿发现", "url": "https://www.nature.com/nature.rss"},
+      {"site": "Science (科学)", "keywords": "基础研究, 学术动态", "url": "https://www.science.org/rss/news_current.xml"},
+      {"site": "MIT Technology Review", "keywords": "AI大模型, 芯片半导体", "url": "https://www.technologyreview.com/feed/"},
+      {"site": "Wired (连线杂志)", "keywords": "极客文化, 科技社会学", "url": "https://www.wired.com/feed/rss"}
+    ],
+    "杂志/评论/博客": [
+      {"site": "The Economist (经济学人)", "keywords": "全球宏观, 经济周期", "url": "https://www.economist.com/finance-and-economics/rss.xml"},
+      {"site": "Foreign Affairs (外交事务)", "keywords": "大国博弈, 外交政策", "url": "https://www.foreignaffairs.com/rss.xml"},
+      {"site": "Politico (政客)", "keywords": "党政关系, 政策变动", "url": "https://rss.politico.com/politics-news.xml"},
+      {"site": "Axios (阿克西奥斯)", "keywords": "政经简报, 内部爆料", "url": "https://api.axios.com/feed/"},
+      {"site": "The Atlantic (大西洋月刊)", "keywords": "深度评论, 文化政治", "url": "https://www.theatlantic.com/feed/all/"}
+    ],
+    "英国/欧洲媒体": [
+      {"site": "Financial Times (金融时报)", "keywords": "欧洲央行, 跨国金融", "url": "https://www.ft.com/news-feed?format=rss"},
+      {"site": "The Guardian (卫报)", "keywords": "左翼视角, 气候与人权", "url": "https://www.theguardian.com/world/rss"},
+      {"site": "Der Spiegel (明镜周刊-德语区)", "keywords": "欧盟政策, 德国工业", "url": "https://www.spiegel.de/international/index.rss"},
+      {"site": "Le Monde (世界报-法语区)", "keywords": "法国政局, 欧洲防务", "url": "https://www.lemonde.fr/en/rss/une.xml"}
+    ],
+    "亚洲/大洋洲媒体": [
+      {"site": "South China Morning Post (南华早报)", "keywords": "港股, 中国宏观, 亚洲地缘", "url": "https://www.scmp.com/rss/318208/feed"},
+      {"site": "Nikkei (日经新闻)", "keywords": "日本央行, 半导体供应链", "url": "https://asia.nikkei.com/rss/feed/nar"},
+      {"site": "The Sydney Morning Herald", "keywords": "澳洲矿业, 亚太贸易", "url": "https://www.smh.com.au/rss/world.xml"},
+      {"site": "Times of India (印度时报)", "keywords": "新兴市场, 印度经济", "url": "https://timesofindia.indiatimes.com/rssfeeds/296589292.cms"},
+      {"site": "TechCrunch", "keywords": "初创企业, 风投动态", "url": "https://techcrunch.com/feed/"},
+      {"site": "The Verge", "keywords": "消费电子, 科技政策", "url": "https://www.theverge.com/rss/index.xml"}
+    ],
+    "军事/地缘博弈": [
+      {"site": "Defense News", "keywords": "全球防务, 军工产业", "url": "https://www.defensenews.com/arc/outboundfeeds/rss/category/global/"},
+      {"site": "USNI News", "keywords": "印太局势, 海权博弈", "url": "https://news.usni.org/feed"},
+      {"site": "The War Zone", "keywords": "先进武器, 冲突实录", "url": "https://www.twz.com/feed/"}
+    ],
+    "Web开发/前沿技术": [
+      {"site": "Hacker News", "keywords": "技术趋势, 创业逻辑", "url": "https://news.ycombinator.com/rss"},
+      {"site": "InfoQ", "keywords": "架构演进, AI编程", "url": "https://www.infoq.com/feed"},
+      {"site": "The New Stack", "keywords": "Web3, 云计算, 开发者生态", "url": "https://thenewstack.io/blog/feed/"}
+    ],
+    "AI/大模型/前沿科技": [
+      {"site": "Hugging Face", "keywords": "开源模型, 论文复现", "url": "https://huggingface.co/blog/feed.xml"},
+      {"site": "OpenAI Blog", "keywords": "AGI, 风向标", "url": "https://openai.com/news/rss.xml"},
+      {"site": "The Decoder", "keywords": "大模型, 行业前瞻", "url": "https://the-decoder.com/feed/"},
+      {"site": "Artificial Intelligence News", "keywords": "AI技术, 落地", "url": "https://www.artificialintelligence-news.com/feed/"},
+      {"site": "VentureBeat AI", "keywords": "大模型, 商业落地", "url": "https://venturebeat.com/category/ai/feed/"},
+      {"site": "Wired Science", "keywords": "前沿科学, 生物技术", "url": "https://www.wired.com/feed/category/science/latest/rss"},
+      {"site": "New Scientist", "keywords": "量子计算, 基因编辑", "url": "https://www.newscientist.com/feed/home/"},
+      {"site": "Space.com", "keywords": "星际航行, 火星计划", "url": "https://www.space.com/feeds/all"},
+      {"site": "IEEE Spectrum", "keywords": "半导体, 机器人工程", "url": "https://spectrum.ieee.org/rss/fulltext"}
+    ],
+    "科幻/影视/深度评论": [
+      {"site": "Tor.com (科幻专栏)", "keywords": "硬核科幻, 史诗评论", "url": "https://www.reactormag.com/feed/"},
+      {"site": "Den of Geek", "keywords": "极客文化, 影视彩蛋", "url": "https://www.denofgeek.com/feed/"}
+    ]
+  }
+}
