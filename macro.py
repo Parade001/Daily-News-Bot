@@ -410,6 +410,45 @@ def format_cell(dynamic_text, static_text):
     return f"{dynamic_text}<br><span style='font-size:11px; font-style:italic; color:#666;'>({static_text})</span>"
 
 def fetch_macro_indicators(fred_api_key=None):
+    """
+    ========================================================================
+    【核心架构文档：A-J 项目及 CIPS 绝对数值与 Z-Score 因子计算逻辑】
+    ========================================================================
+    A. LME铜升贴水:
+       - 绝对值: 爬虫解析 www.westmetall.com (Copper Cash 减去 3-months)。
+       - 因子状态(Z-Score): 无。用作物理微观印证。
+    B. 逆回购(RRP) / 净流动性:
+       - 绝对值: FRED API 提取 `RRPONTSYD` (美联储隔夜逆回购绝对规模)。
+       - 因子状态(Z-Score): 提取过去 1 年的 WALCL(总资产) - RRP - TGA 计算出净流动性，求其 20 日变化量(Delta)的 EMA 平滑序列，最终对该序列求 Robust Z-Score。
+    C. 核心实时汇率:
+       - 绝对值: Yahoo API 获取 `USDCNY=X`(在岸), `USDCNH=X`(离岸), `HKDCNY=X`(港币兑人民币)。
+       - 因子状态(价差 pips): (离岸 - 在岸) * 10000。无 Z-Score。
+    D. 盈亏通胀率:
+       - 绝对值: FRED API 提取 `T10YIE` (10年期盈亏平衡通胀率)。
+       - 因子状态(Z-Score): 无。
+    E. 实际利率(TIPS):
+       - 绝对值: FRED API 提取 `DFII10` (10年期通胀保值债券收益率)。
+       - 因子状态(Z-Score): 基于过去 1 年历史数据的 Robust Z-Score (使用中位数和 MAD，抗肥尾)。
+    F. 高收益债利差:
+       - 绝对值: FRED API 提取 `BAMLH0A0HYM2` (美国高收益企业债期权调整利差)。
+       - 因子状态(Z-Score): 基于过去 1 年历史数据的 Robust Z-Score。
+    G. 长短端利差:
+       - 绝对值: FRED API 提取 `T10Y2Y` (10年期国债收益率 减去 2年期国债收益率)。
+       - 因子状态(Z-Score): 无。用于定性判断周期拐点。
+    H. 美元指数(DXY):
+       - 绝对值: Yahoo API 提取 `DX-Y.NYB`。
+       - 因子状态(Z-Score): 基于过去 1 年历史数据的 Robust Z-Score。
+    I. 复合风险指数:
+       - 绝对值: 综合衍生计算，无单一原始数据。
+       - 因子状态(Z-Score): `0.6 * Max(VIX_Z, MOVE_Z, HY_Z) + 0.4 * Mean(VIX_Z, MOVE_Z, HY_Z)`。兼顾黑天鹅极值与系统性厚度。
+    J. 跨境流动性(HIBOR):
+       - 绝对值: 穿透抓取中银香港(BOCHK)底层接口，或雅虎 API `CNHON=X` 等多期限备用。
+       - 因子状态(Z-Score): 无。
+    CIPS 结构面新闻:
+       - 绝对值: 抓取 Google News RSS "CIPS 交易 金额 OR 笔数" (回溯1年)，并转为 Markdown 锚点链接。
+       - 因子状态(Z-Score): 无。长线定性跟踪。
+    ========================================================================
+    """
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_f = executor.submit(extract_factors, fred_api_key)
         future_cips = executor.submit(get_cips_structural_news)
