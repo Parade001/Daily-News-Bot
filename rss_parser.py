@@ -3,18 +3,24 @@ import requests
 import feedparser
 import re
 import concurrent.futures
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from http_client import shared_session
 
-# 全局复用 DeepSeek 的 HTTP Session，减少底层的 TLS 握手耗时
-deepseek_session = requests.Session()
+# 【核心升级】：为大模型也配置带防 429 熔断和 50 线程容量的专属 Session
+def create_deepseek_session():
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50, max_retries=retries)
+    session.mount('https://', adapter)
+    return session
+
+deepseek_session = create_deepseek_session()
 
 def batch_translate_deepseek(titles, api_key):
-    """【优化 2】批量翻译：将多个标题打包成 1 次 API 请求，大幅压缩耗时"""
     if not titles: return []
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-
-    # 组装带序号的翻译长文 (如: 0. Title 1 \n 1. Title 2)
     input_text = "\n".join([f"{i}. {t}" for i, t in enumerate(titles)])
 
     payload = {
@@ -27,11 +33,10 @@ def batch_translate_deepseek(titles, api_key):
     }
 
     try:
-        # 发起单次批量请求
         response = deepseek_session.post("https://api.deepseek.com/chat/completions", headers=headers, json=payload, timeout=20)
+        response.raise_for_status() # 确保触发 HTTP 错误从而重试
         content = response.json()['choices'][0]['message']['content'].strip()
 
-        # 鲁棒性正则解析：精准还原每一行翻译对应的原文位置
         translated_dict = {}
         for line in content.split('\n'):
             match = re.match(r'^(\d+)\.\s*(.*)', line.strip())
@@ -39,17 +44,14 @@ def batch_translate_deepseek(titles, api_key):
                 idx = int(match.group(1))
                 translated_dict[idx] = match.group(2).replace('|', '-').replace('\n', ' ')
 
-        # 组装返回列表，若模型漏翻则使用英文原文兜底
         result = []
         for i in range(len(titles)):
             result.append(translated_dict.get(i, titles[i].replace('|', '-')))
         return result
     except Exception as e:
-        # 极端情况回退为原文
         return [t.replace('|', '-') for t in titles]
 
 def process_single_site(category, site_info, api_key):
-    """处理单个网站的抓取与翻译任务（用于放进线程池执行）"""
     site_name = site_info["site"]
     keywords = site_info["keywords"]
     url = site_info["url"]
@@ -61,15 +63,12 @@ def process_single_site(category, site_info, api_key):
         if not feed.entries:
             return f"| **{category}** | {site_name} | *{keywords}* | [暂无更新或解析失败] |\n"
 
-        # 提取前 3 条标题和链接
         entries = feed.entries[:3]
         original_titles = [getattr(e, 'title', '无标题') for e in entries]
         links = [getattr(e, 'link', '#') for e in entries]
 
-        # 调用批量翻译函数
         zh_titles = batch_translate_deepseek(original_titles, api_key)
 
-        # 组装单行的 Markdown
         news_links_html = ""
         for zh_title, link in zip(zh_titles, links):
             news_links_html += f"• [{zh_title}]({link})<br><br>"
@@ -79,30 +78,27 @@ def process_single_site(category, site_info, api_key):
         return f"| **{category}** | {site_name} | *{keywords}* | [数据解析异常] |\n"
 
 def fetch_rss_news(rss_config, api_key):
-    """【优化 1】多线程并发驱动引擎"""
     md_content = "## 📰 核心政经与大宗商品速递\n\n"
     md_content += "| 分类 | 网站 (中英文) | 详细关键词与分类 | 最新中文标题与原文链接 |\n"
     md_content += "| :--- | :--- | :--- | :--- |\n"
 
-    # 将嵌套字典展平为线性任务列表
     tasks = []
     for category, sites in rss_config.items():
         for site_info in sites:
             tasks.append((category, site_info))
 
-    print(f"📡 RSS 模块：准备并发抓取与翻译 {len(tasks)} 个源...")
+    task_count = len(tasks)
+    print(f"📡 RSS 模块：准备并发抓取与翻译 {task_count} 个源...")
 
-    # 启动 10 个工人的并发线程池
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        # submit 会立刻将所有任务并行发射出去，极速执行
+    # 【性能解封】：直接根据任务量动态分配线程，最高允许 50 个并发（一波流全部发完！）
+    max_threads = min(50, task_count) if task_count > 0 else 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
         futures = [executor.submit(process_single_site, cat, info, api_key) for cat, info in tasks]
 
-        # 按照原来的先后顺序提取结果，保证表格顺序不乱
         for future in futures:
             results.append(future.result())
 
-    # 汇总 Markdown 结果
     for r in results:
         md_content += r
 
