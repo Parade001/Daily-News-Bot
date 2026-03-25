@@ -4,7 +4,7 @@ import urllib.parse
 import re
 import time
 import feedparser
-import concurrent.futures  # 【新增】引入多线程并发库
+import concurrent.futures
 from http_client import shared_session
 
 # ================== 1. 底层网络与容错 ==================
@@ -70,6 +70,18 @@ def get_yahoo_history(ticker):
         return (closes[0], closes) if closes else (None, [])
     except: return None, []
 
+def get_yahoo_quote(ticker):
+    """【备用黑魔法】调用雅虎瞬时报价前端 API，无视历史 K 线断流"""
+    url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
+    try:
+        r = shared_session.get(url, timeout=5)
+        if r.status_code == 200:
+            res = r.json().get('quoteResponse', {}).get('result', [])
+            if res:
+                return res[0].get('regularMarketPrice')
+    except: pass
+    return None
+
 # ================== 2. 专项数据抓取 (LME / CIPS) ==================
 
 def get_lme_spread():
@@ -107,16 +119,38 @@ def get_cips_structural_news():
     return "系统未检索到本年度 CIPS 官方重磅数据"
 
 def get_cnh_hibor():
-    tickers = [
-        ("CNHON=X", "隔夜"),
-        ("CNH1WD=X", "1周"),
-        ("CNH1MD=X", "1个月")
-    ]
+    """【终极修复】直捣黄龙：穿透 iframe 抓取中银香港底层真实数据源"""
+    # 1. 抓取真实的 iframe 底层接口 (脱掉空壳)
+    real_api_url = "https://www.bochk.com/whk/rates/cnyHiborRates/cnyHiborRates-enquiry.action?lang=cn"
+
+    html = fetch_html_with_fallback(real_api_url)
+
+    if html:
+        try:
+            # 兼容带有百分号或没有百分号的数字结构
+            on_match = re.search(r'(?:Overnight|隔夜)[^\d]*?([\d\.]+)\s*%?', html, re.IGNORECASE)
+            if on_match: return float(on_match.group(1)), "隔夜(BOC)"
+
+            w1_match = re.search(r'(?:1\s*Week|1星期|1周)[^\d]*?([\d\.]+)\s*%?', html, re.IGNORECASE)
+            if w1_match: return float(w1_match.group(1)), "1周(BOC)"
+
+            m1_match = re.search(r'(?:1\s*Month|1个月)[^\d]*?([\d\.]+)\s*%?', html, re.IGNORECASE)
+            if m1_match: return float(m1_match.group(1)), "1个月(BOC)"
+        except:
+            pass
+
+    # 2. 雅虎瞬时报价前端 API (无视历史 K 线断流)
+    tickers = [("CNHON=X", "隔夜"), ("CNH1WD=X", "1周"), ("CNH1MD=X", "1个月")]
+    for ticker, name in tickers:
+        val = get_yahoo_quote(ticker)
+        if val is not None: return val, f"{name}(YQ)"
+
+    # 3. 最次选：雅虎旧版历史 K 线 API
     for ticker, name in tickers:
         val, _ = get_yahoo_history(ticker)
-        if val is not None:
-            return val, name
-    return None, "断流"
+        if val is not None: return val, f"{name}(YH)"
+
+    return None, "官方与备用全断流"
 
 # ================== 3. 量化数学模型 ==================
 
@@ -177,12 +211,9 @@ def fmt_val(val, suffix="", precision=2):
 # ================== 4. 因子提取与量化计算 ==================
 
 def extract_factors(api_key):
-    """【核心并发层】利用线程池并发抓取 20+ 个数据接口，极致压缩 I/O 阻塞时间"""
     f = {}
 
-    # 开启拥有 20 个 Worker 的线程池
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        # 将所有的网络请求全部扔进线程池异步执行
         futures = {
             "vix": executor.submit(get_yahoo_history, "^VIX"),
             "move": executor.submit(get_yahoo_history, "^MOVE"),
@@ -206,7 +237,6 @@ def extract_factors(api_key):
             "copx": executor.submit(get_yahoo_history, "COPX")
         }
 
-        # 阻塞等待所有结果返回，并解包数据
         _, vix = futures["vix"].result()
         _, move = futures["move"].result()
         hy_cur, hy = futures["hy"].result()
@@ -230,7 +260,6 @@ def extract_factors(api_key):
         f['gold_cur'], f['gold_hist'] = futures["gold"].result()
         f['copx_cur'], f['copx_hist'] = futures["copx"].result()
 
-    # 以下逻辑为纯 CPU 计算，瞬间完成
     spread_pips = f"{(usd_cnh_cur - usd_cny_cur) * 10000:.0f} pips" if (usd_cnh_cur and usd_cny_cur) else "无报价"
 
     f['raw'] = {
@@ -381,9 +410,6 @@ def format_cell(dynamic_text, static_text):
     return f"{dynamic_text}<br><span style='font-size:11px; font-style:italic; color:#666;'>({static_text})</span>"
 
 def fetch_macro_indicators(fred_api_key=None):
-    """
-    【总装配层】运用双线程并行调度核心模型与外部 RSS 新闻，进一步压榨性能
-    """
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_f = executor.submit(extract_factors, fred_api_key)
         future_cips = executor.submit(get_cips_structural_news)
