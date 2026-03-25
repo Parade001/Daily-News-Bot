@@ -4,12 +4,12 @@ import urllib.parse
 import re
 import time
 import feedparser
+import concurrent.futures  # 【新增】引入多线程并发库
 from http_client import shared_session
 
 # ================== 1. 底层网络与容错 ==================
 
 def fetch_with_retry(url, is_json=False, max_retries=3):
-    """带指数退避的重试机制，保障云端请求成功率"""
     for i in range(max_retries):
         try:
             r = shared_session.get(url, timeout=10)
@@ -20,7 +20,6 @@ def fetch_with_retry(url, is_json=False, max_retries=3):
     return None
 
 def fetch_html_with_fallback(url):
-    """【强化】加入真实浏览器 Header 伪装，引入新跳板，对抗 Cloudflare 人机验证"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -91,7 +90,6 @@ def get_lme_spread():
     return "盾/跳板全拦截"
 
 def get_cips_structural_news():
-    """【修复】增加超链接 (a 标签) 支持，让新闻可直接点击阅读"""
     url = "https://news.google.com/rss/search?q=CIPS+%E4%BA%A4%E6%98%93+%E9%87%91%E9%A2%9D+OR+%E7%AC%94%E6%95%B0+when:1y&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
     try:
         feed = feedparser.parse(url)
@@ -109,7 +107,6 @@ def get_cips_structural_news():
     return "系统未检索到本年度 CIPS 官方重磅数据"
 
 def get_cnh_hibor():
-    """多期限容错抓取：隔夜(O/N) -> 1周(1W) -> 1个月(1M)"""
     tickers = [
         ("CNHON=X", "隔夜"),
         ("CNH1WD=X", "1周"),
@@ -180,32 +177,67 @@ def fmt_val(val, suffix="", precision=2):
 # ================== 4. 因子提取与量化计算 ==================
 
 def extract_factors(api_key):
+    """【核心并发层】利用线程池并发抓取 20+ 个数据接口，极致压缩 I/O 阻塞时间"""
     f = {}
-    _, vix = get_yahoo_history("^VIX")
-    _, move = get_yahoo_history("^MOVE")
-    hy_cur, hy = get_fred_history("BAMLH0A0HYM2", api_key)
-    rr_cur, rr = get_fred_history("DFII10", api_key)
-    us10_cur, us10 = get_fred_history("DGS10", api_key)
-    dxy_cur, dxy = get_yahoo_history("DX-Y.NYB")
-    rrp_cur, rrp = get_fred_history("RRPONTSYD", api_key, force_daily=True)
-    t10_cur, t10 = get_fred_history("T10YIE", api_key)
-    yc_cur, yc = get_fred_history("T10Y2Y", api_key)
 
-    # 获取离岸资金价格，并修复了外部引用的名字
-    hibor_cur, hibor_name = get_cnh_hibor()
+    # 开启拥有 20 个 Worker 的线程池
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        # 将所有的网络请求全部扔进线程池异步执行
+        futures = {
+            "vix": executor.submit(get_yahoo_history, "^VIX"),
+            "move": executor.submit(get_yahoo_history, "^MOVE"),
+            "hy": executor.submit(get_fred_history, "BAMLH0A0HYM2", api_key),
+            "rr": executor.submit(get_fred_history, "DFII10", api_key),
+            "us10": executor.submit(get_fred_history, "DGS10", api_key),
+            "dxy": executor.submit(get_yahoo_history, "DX-Y.NYB"),
+            "rrp": executor.submit(get_fred_history, "RRPONTSYD", api_key, limit=300, force_daily=True),
+            "t10": executor.submit(get_fred_history, "T10YIE", api_key),
+            "yc": executor.submit(get_fred_history, "T10Y2Y", api_key),
+            "hibor": executor.submit(get_cnh_hibor),
+            "usd_cnh": executor.submit(get_yahoo_history, "USDCNH=X"),
+            "usd_cny": executor.submit(get_yahoo_history, "USDCNY=X"),
+            "hkd_cny": executor.submit(get_yahoo_history, "HKDCNY=X"),
+            "cny_hkd": executor.submit(get_yahoo_history, "CNYHKD=X"),
+            "lme": executor.submit(get_lme_spread),
+            "walcl": executor.submit(get_fred_history, "WALCL", api_key, limit=300, force_daily=True),
+            "tga": executor.submit(get_fred_history, "WTREGEN", api_key, limit=300, force_daily=True),
+            "voo": executor.submit(get_yahoo_history, "VOO"),
+            "gold": executor.submit(get_yahoo_history, "GC=F"),
+            "copx": executor.submit(get_yahoo_history, "COPX")
+        }
 
-    usd_cnh_cur, _ = get_yahoo_history("USDCNH=X")
-    usd_cny_cur, _ = get_yahoo_history("USDCNY=X")
-    hkd_cny_cur, _ = get_yahoo_history("HKDCNY=X")
-    cny_hkd_cur, _ = get_yahoo_history("CNYHKD=X")
+        # 阻塞等待所有结果返回，并解包数据
+        _, vix = futures["vix"].result()
+        _, move = futures["move"].result()
+        hy_cur, hy = futures["hy"].result()
+        rr_cur, rr = futures["rr"].result()
+        us10_cur, us10 = futures["us10"].result()
+        dxy_cur, dxy = futures["dxy"].result()
+        rrp_cur, rrp = futures["rrp"].result()
+        t10_cur, t10 = futures["t10"].result()
+        yc_cur, yc = futures["yc"].result()
+        hibor_cur, hibor_name = futures["hibor"].result()
 
+        usd_cnh_cur, _ = futures["usd_cnh"].result()
+        usd_cny_cur, _ = futures["usd_cny"].result()
+        hkd_cny_cur, _ = futures["hkd_cny"].result()
+        cny_hkd_cur, _ = futures["cny_hkd"].result()
+        lme_spread = futures["lme"].result()
+        _, walcl = futures["walcl"].result()
+        _, tga = futures["tga"].result()
+
+        f['voo_cur'], f['voo_hist'] = futures["voo"].result()
+        f['gold_cur'], f['gold_hist'] = futures["gold"].result()
+        f['copx_cur'], f['copx_hist'] = futures["copx"].result()
+
+    # 以下逻辑为纯 CPU 计算，瞬间完成
     spread_pips = f"{(usd_cnh_cur - usd_cny_cur) * 10000:.0f} pips" if (usd_cnh_cur and usd_cny_cur) else "无报价"
 
     f['raw'] = {
         'hy': hy_cur, 'rr': rr_cur, 'us10': us10_cur, 'dxy': dxy_cur,
         'rrp': rrp_cur, 't10': t10_cur, 'yc': yc_cur,
-        'hibor': hibor_cur, 'hibor_name': hibor_name, # 【修复】：将期限名字存入字典
-        'lme_spread': get_lme_spread(),
+        'hibor': hibor_cur, 'hibor_name': hibor_name,
+        'lme_spread': lme_spread,
         'usd_cnh': usd_cnh_cur, 'usd_cny': usd_cny_cur,
         'hkd_cny': hkd_cny_cur, 'cny_hkd': cny_hkd_cur,
         'cnh_cny_spread': spread_pips
@@ -218,9 +250,6 @@ def extract_factors(api_key):
     f['z_us10y'] = calc_robust_z(us10[0], us10) if us10 else 0.0
     f['z_dxy'] = calc_robust_z(dxy[0], dxy) if dxy else 0.0
 
-    _, walcl = get_fred_history("WALCL", api_key, limit=300, force_daily=True)
-    _, tga = get_fred_history("WTREGEN", api_key, limit=300, force_daily=True)
-
     f['liq_delta_z'] = 0.0
     if walcl and rrp and tga:
         min_len = min(len(walcl), len(rrp), len(tga))
@@ -232,10 +261,6 @@ def extract_factors(api_key):
                 raw_deltas.append(l_cur - l_past)
             smoothed = calc_ema(raw_deltas, span=10)
             f['liq_delta_z'] = calc_robust_z(smoothed[0], smoothed) if smoothed else 0.0
-
-    f['voo_cur'], f['voo_hist'] = get_yahoo_history("VOO")
-    f['gold_cur'], f['gold_hist'] = get_yahoo_history("GC=F")
-    f['copx_cur'], f['copx_hist'] = get_yahoo_history("COPX")
 
     return f
 
@@ -285,10 +310,8 @@ def calculate_quant_execution(f):
 # ================== 5. 动态解读引擎与面板 ==================
 
 def generate_dynamic_analysis(raw, raw_f, risk_comp):
-    """【核心升级】基于当日数据的动态宏观解读引擎"""
     desc = {}
 
-    # A. 铜升贴水
     lme_str = raw.get('lme_spread', '')
     if '$' in lme_str:
         try:
@@ -297,13 +320,11 @@ def generate_dynamic_analysis(raw, raw_f, risk_comp):
         except: desc['A'] = "⚠️ 暂无最新结构数据"
     else: desc['A'] = "⚠️ 暂无最新结构数据"
 
-    # B. 流动性 Z值
     lz = raw_f.get('liq_delta_z', 0)
     if lz > 1.0: desc['B'] = "🌊 放水周期：流动性边际大幅宽松，利好风险资产。"
     elif lz < -1.0: desc['B'] = "🏜️ 抽水周期：流动性边际收紧，压制估值。"
     else: desc['B'] = "⚖️ 中性震荡：流动性无明显边际方向。"
 
-    # C. 汇率价差
     pips_str = str(raw.get('cnh_cny_spread', ''))
     if 'pips' in pips_str:
         try:
@@ -314,7 +335,6 @@ def generate_dynamic_analysis(raw, raw_f, risk_comp):
         except: desc['C'] = "⚠️ 暂无有效价差"
     else: desc['C'] = "⚠️ 暂无有效价差"
 
-    # D. 盈亏通胀
     t10 = raw.get('t10')
     if t10 is not None:
         if t10 > 2.5: desc['D'] = "🔥 预期高涨：通胀重燃风险，利好抗通胀资产。"
@@ -322,19 +342,16 @@ def generate_dynamic_analysis(raw, raw_f, risk_comp):
         else: desc['D'] = "⚖️ 预期温和：通胀预期处于常态区间。"
     else: desc['D'] = "⚠️ 场内数据缺失"
 
-    # E. 实际利率
     rz = raw_f.get('z_realrate', 0)
     if rz > 1.5: desc['E'] = "🧱 极度压制：实际利率达历史高位，黄金估值承压。"
     elif rz < -1.5: desc['E'] = "🚀 极度宽松：实际利率大跌，黄金的绝佳顺风期。"
     else: desc['E'] = "⚖️ 估值中性：利率未见极端偏离。"
 
-    # F. 信用利差
     hy = raw.get('hy')
     hz = raw_f.get('z_hy', 0)
     if hy is not None and (hy > 5.0 or hz > 2.0): desc['F'] = "🚨 违约警报：企业融资困难，经济衰退风险飙升！"
     else: desc['F'] = "✅ 信用健康：高收益债市未见违约恐慌。"
 
-    # G. 收益率曲线
     yc = raw.get('yc')
     if yc is not None:
         if yc < -0.1: desc['G'] = "⚠️ 深度倒挂：长周期经济衰退正在酝酿。"
@@ -342,19 +359,16 @@ def generate_dynamic_analysis(raw, raw_f, risk_comp):
         else: desc['G'] = "✅ 曲线正常：经济周期处于健康扩展期。"
     else: desc['G'] = "⚠️ 场内数据缺失"
 
-    # H. 美元指数
     dz = raw_f.get('z_dxy', 0)
     if dz > 1.5: desc['H'] = "🌪️ 强势美元：全球流动性被虹吸，重挫非美与大宗。"
     elif dz < -1.5: desc['H'] = "🌊 弱势美元：资金流出美国，利好新兴市场。"
     else: desc['H'] = "⚖️ 震荡区间：未形成单边的极值趋势。"
 
-    # I. 综合风险
     rc = risk_comp
     if rc > 2.0: desc['I'] = "🔥 极度恐慌：系统性崩盘特征，强制切入防御避险模式！"
     elif rc > 1.0: desc['I'] = "⚠️ 风险升温：市场情绪脆弱，系统已自动限制多头敞口。"
     else: desc['I'] = "✅ 情绪稳定：市场结构健康，可放心顺势交易。"
 
-    # J. HIBOR
     hibor = raw.get('hibor')
     if hibor is not None:
         if hibor > 4.5: desc['J'] = "🚨 离岸抽水：拆借利率飙升，做空人民币成本急剧增加！"
@@ -364,19 +378,23 @@ def generate_dynamic_analysis(raw, raw_f, risk_comp):
     return desc
 
 def format_cell(dynamic_text, static_text):
-    """将动态判定与静态规则组装为 HTML 样式"""
     return f"{dynamic_text}<br><span style='font-size:11px; font-style:italic; color:#666;'>({static_text})</span>"
 
 def fetch_macro_indicators(fred_api_key=None):
-    f = extract_factors(fred_api_key)
+    """
+    【总装配层】运用双线程并行调度核心模型与外部 RSS 新闻，进一步压榨性能
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future_f = executor.submit(extract_factors, fred_api_key)
+        future_cips = executor.submit(get_cips_structural_news)
+
+        f = future_f.result()
+        cips_news = future_cips.result()
+
     pos, risk_comp, constraints, raw_f = calculate_quant_execution(f)
     raw = f['raw']
-    cips_news = get_cips_structural_news()
 
-    # 提取多期限容错名字，如果因为周末没数据则默认为'隔夜'
     hibor_name = raw.get('hibor_name', '隔夜')
-
-    # 跑通动态解读引擎
     desc = generate_dynamic_analysis(raw, raw_f, risk_comp)
 
     md = "## 🗺️ 市场宽度与全景热力图 (Market Breadth)\n\n"
