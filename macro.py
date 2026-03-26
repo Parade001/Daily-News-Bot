@@ -120,14 +120,12 @@ def get_cips_structural_news():
 
 def get_cnh_hibor():
     """【终极修复】直捣黄龙：穿透 iframe 抓取中银香港底层真实数据源"""
-    # 1. 抓取真实的 iframe 底层接口 (脱掉空壳)
     real_api_url = "https://www.bochk.com/whk/rates/cnyHiborRates/cnyHiborRates-enquiry.action?lang=cn"
 
     html = fetch_html_with_fallback(real_api_url)
 
     if html:
         try:
-            # 兼容带有百分号或没有百分号的数字结构
             on_match = re.search(r'(?:Overnight|隔夜)[^\d]*?([\d\.]+)\s*%?', html, re.IGNORECASE)
             if on_match: return float(on_match.group(1)), "隔夜(BOC)"
 
@@ -139,13 +137,11 @@ def get_cnh_hibor():
         except:
             pass
 
-    # 2. 雅虎瞬时报价前端 API (无视历史 K 线断流)
     tickers = [("CNHON=X", "隔夜"), ("CNH1WD=X", "1周"), ("CNH1MD=X", "1个月")]
     for ticker, name in tickers:
         val = get_yahoo_quote(ticker)
         if val is not None: return val, f"{name}(YQ)"
 
-    # 3. 最次选：雅虎旧版历史 K 线 API
     for ticker, name in tickers:
         val, _ = get_yahoo_history(ticker)
         if val is not None: return val, f"{name}(YH)"
@@ -179,6 +175,15 @@ def calc_volatility_z(history, window=20):
         var = sum((r - sum(rets)/window)**2 for r in rets) / (window - 1)
         vol_hist.append(math.sqrt(var) * math.sqrt(252))
     return calc_robust_z(vol_hist[0], vol_hist)
+
+def calc_momentum_z(history, window=3):
+    """【新增】一阶导动量加速过滤器 (Momentum Z-Score)"""
+    if not history or len(history) < window + 20:
+        return 0.0
+    # 计算特定窗口期的差值序列（动量）
+    momentum_series = [history[i] - history[i+window] for i in range(len(history)-window)]
+    # 返回动量序列的 Robust Z-Score，反映当下的加速度是否异常极值
+    return calc_robust_z(momentum_series[0], momentum_series)
 
 def calc_ema(history, span=10):
     if not history: return []
@@ -279,6 +284,9 @@ def extract_factors(api_key):
     f['z_us10y'] = calc_robust_z(us10[0], us10) if us10 else 0.0
     f['z_dxy'] = calc_robust_z(dxy[0], dxy) if dxy else 0.0
 
+    # 【新增】引入实际利率的动量极值因子 (加速度)
+    f['z_realrate_mom'] = calc_momentum_z(rr, window=3)
+
     f['liq_delta_z'] = 0.0
     if walcl and rrp and tga:
         min_len = min(len(walcl), len(rrp), len(tga))
@@ -324,6 +332,14 @@ def calculate_quant_execution(f):
     pos["VOO"], const["VOO"] = apply_filters(f['voo_cur'], f['voo_hist'], z_voo)
     pos["GOLD"], const["GOLD"] = apply_filters(f['gold_cur'], f['gold_hist'], z_gold)
     pos["COPX"], const["COPX"] = apply_filters(f['copx_cur'], f['copx_hist'], z_copx)
+
+    # 【新增风控】如果实际利率出现陡峭加速上行 (动量 Z > 1.5)，黄金底层估值受压，强制削减一半敞口
+    if f.get('z_realrate_mom', 0.0) > 1.5:
+        pos["GOLD"] *= 0.5
+        if const["GOLD"] == "✅ 健康":
+            const["GOLD"] = "🚨 实际利率加速上行"
+        else:
+            const["GOLD"] += " | 🚨 实际利率加速上行"
 
     if pos["VOO"] + pos["COPX"] > 1.2:
         scale = 1.2 / (pos["VOO"] + pos["COPX"])
@@ -428,7 +444,7 @@ def fetch_macro_indicators(fred_api_key=None):
        - 因子状态(Z-Score): 无。
     E. 实际利率(TIPS):
        - 绝对值: FRED API 提取 `DFII10` (10年期通胀保值债券收益率)。
-       - 因子状态(Z-Score): 基于过去 1 年历史数据的 Robust Z-Score (使用中位数和 MAD，抗肥尾)。
+       - 因子状态(Z-Score): 基于过去 1 年历史数据的 Robust Z-Score (横截面绝对值度量) + 3日动量的一阶导数度量(加速度)。
     F. 高收益债利差:
        - 绝对值: FRED API 提取 `BAMLH0A0HYM2` (美国高收益企业债期权调整利差)。
        - 因子状态(Z-Score): 基于过去 1 年历史数据的 Robust Z-Score。
@@ -489,7 +505,10 @@ def fetch_macro_indicators(fred_api_key=None):
     md += f"| **C. 核心实时汇率** | {fx_str} | 价差: **{raw['cnh_cny_spread']}** | {format_cell(desc['C'], '价差剧烈扩大(>300)意味外资正在做空中国资产')} |\n"
 
     md += f"| **D. 盈亏通胀率** | **{fmt_val(raw['t10'], '%')}** | 远期定价 | {format_cell(desc['D'], '黄金的助推剂，突破前高需重仓')} |\n"
-    md += f"| **E. 实际利率(TIPS)**| **{fmt_val(raw['rr'], '%')}** | **{fmt_val(raw_f['z_realrate'])}** | {format_cell(desc['E'], '黄金绝对反向锚，极高位时压制一切估值')} |\n"
+
+    # 【UI优化】为 TIPS 添加灰色的 (T-1, FRED) 机构严谨标注
+    md += f"| **E. 实际利率(TIPS)**| **{fmt_val(raw['rr'], '%')}** <span style='font-size:11px;color:#888;'>(T-1, FRED)</span> | **{fmt_val(raw_f['z_realrate'])}** | {format_cell(desc['E'], '黄金绝对反向锚，极高位时压制一切估值')} |\n"
+
     md += f"| **F. 高收益债利差** | **{fmt_val(raw['hy'], '%')}** | **{fmt_val(raw_f['z_hy'])}** (信用) | {format_cell(desc['F'], '企业违约生死线，破 5% 亮红灯')} |\n"
     md += f"| **G. 长短端利差** | **{fmt_val(raw['yc'], '%')}** | 周期警报 | {format_cell(desc['G'], '10Y-2Y 倒挂解除瞬间，通常衰退正式兑现')} |\n"
     md += f"| **H. 美元指数(DXY)** | **{fmt_val(raw['dxy'])}** | **{fmt_val(raw_f['z_dxy'])}** | {format_cell(desc['H'], '全球流动性虹吸指标，走强利空大宗')} |\n"
