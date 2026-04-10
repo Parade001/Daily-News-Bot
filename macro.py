@@ -305,11 +305,21 @@ def calculate_quant_execution(f):
     pos, const = {}, {}
     risk_comp = max(f['z_vix'], f['z_move'], f['z_hy']) * 0.6 + sum([f['z_vix'], f['z_move'], f['z_hy']])/3.0 * 0.4
 
+    # 【新增改动 3】风险非线性惩罚 (钝化低风险干扰，放大高风险恐慌)
+    def risk_penalty(r):
+        if r < 1.0:
+            return r * 0.3
+        elif r < 2.0:
+            return r * 0.8
+        else:
+            return r * 1.5
+
     w_liq, w_risk, w_rate = (0.3, 1.2, 0.8) if f['z_us10y'] > 1.5 else (0.7, 0.8, 0.4)
 
-    z_voo = (f['liq_delta_z'] * w_liq) - (risk_comp * w_risk) - (f['z_us10y'] * w_rate)
-    z_gold = -(f['z_realrate'] * 1.0) - (f['z_dxy'] * 0.4) + (risk_comp * 0.3)
-    z_copx = -(f['z_dxy'] * 0.6) + (f['liq_delta_z'] * w_liq) - (risk_comp * w_risk)
+    # 【新增改动 1】全面应用 risk_penalty，并将估值压制主引擎由 US10Y 切换为 实际利率(TIPS)
+    z_voo = (f['liq_delta_z'] * w_liq) - (risk_penalty(risk_comp) * w_risk) - (f['z_realrate'] * 1.2)
+    z_gold = -(f['z_realrate'] * 1.0) - (f['z_dxy'] * 0.4) + (risk_penalty(risk_comp) * 0.3)
+    z_copx = -(f['z_dxy'] * 0.6) + (f['liq_delta_z'] * w_liq) - (risk_penalty(risk_comp) * w_risk)
 
     def apply_filters(price, history, base_z):
         if not history or len(history) < 210: return z_to_position(base_z), "数据不足"
@@ -321,12 +331,17 @@ def calculate_quant_execution(f):
         msgs = []
         if vol_z > 1.5:
             target *= 0.5; msgs.append("高波动降仓")
+
         if price < ma200 and slope < 0:
             return 0.0, "🚨 破位向下(空仓)"
         elif price >= ma200 and slope < 0:
             target = min(target, 0.3); msgs.append("⚠️ 均线背离(限仓)")
         elif price < ma200 and slope > 0:
             target = min(target, 0.3); msgs.append("⚠️ 熊市反弹(限仓)")
+        # 【新增改动 2】右侧趋势确认增强 (顺势交易加持，避免完美错过主升浪)
+        elif price >= ma200 and slope > 0:
+            target = min(target + 0.3, 1.0); msgs.append("🚀 趋势确认(+30%)")
+
         return target, " | ".join(msgs) if msgs else "✅ 健康"
 
     pos["VOO"], const["VOO"] = apply_filters(f['voo_cur'], f['voo_hist'], z_voo)
