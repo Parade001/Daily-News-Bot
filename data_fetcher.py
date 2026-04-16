@@ -2,41 +2,61 @@ import re
 import time
 import urllib.parse
 import feedparser
+import concurrent.futures
 from http_client import shared_session
 
-def fetch_with_retry(url, is_json=False, max_retries=2):
-    """【极限提速】砍掉重试次数至2次，取消指数睡眠"""
+def fetch_with_retry(url, is_json=False, max_retries=2, timeout=4.0):
+    """【极限极速】砍掉多余重试，限制绝对超时时间为 4 秒"""
     for i in range(max_retries):
         try:
-            # 强制 3.5 秒超时，绝不给慢节点挂起线程的机会
-            r = shared_session.get(url, timeout=3.5)
+            r = shared_session.get(url, timeout=timeout)
             if r.status_code == 200: return r.json() if is_json else r.text
-        except Exception:
-            time.sleep(0.5) # 最多只停顿 0.5 秒，行就行，不行拉倒
+        except Exception: pass
     return None
 
-def fetch_html_with_fallback(url):
-    """【极限提速】砍掉多余跳板，Fail-Fast 快速失败"""
+def fetch_html_concurrently(url):
+    """【黑科技：并发对冲】同时向三个通道发射请求，谁先成功返回用谁，彻底消灭排队阻塞"""
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://www.google.com/"
     }
 
-    # 1. 尝试直连 (3.5秒)
-    try:
-        r = shared_session.get(url, headers=headers, timeout=3.5)
-        if r.status_code == 200 and "<title>Just a moment" not in r.text: return r.text
-    except: pass
+    def try_direct():
+        try:
+            r = shared_session.get(url, headers=headers, timeout=4.0)
+            if r.status_code == 200 and "<title>Just a moment" not in r.text: return r.text
+        except: pass
+        return None
 
-    # 2. 仅保留最快的一个跳板 (3.5秒)
-    try:
-        r = shared_session.get(f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}", timeout=3.5)
-        if r.status_code == 200:
-            html = r.json().get("contents", "")
-            if html and "<title>Just a moment" not in html: return html
-    except: pass
+    def try_allorigins():
+        try:
+            r = shared_session.get(f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}", timeout=4.0)
+            if r.status_code == 200:
+                html = r.json().get("contents", "")
+                if html and "<title>Just a moment" not in html: return html
+        except: pass
+        return None
+
+    def try_codetabs():
+        try:
+            r = shared_session.get(f"https://api.codetabs.com/v1/proxy/?quest={url}", timeout=4.0)
+            if r.status_code == 200 and "<title>Just a moment" not in r.text: return r.text
+        except: pass
+        return None
+
+    # 开 3 个独立线程同时去抢数据
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [
+            executor.submit(try_direct),
+            executor.submit(try_allorigins),
+            executor.submit(try_codetabs)
+        ]
+        # as_completed 机制：谁第一个完成，就立刻返回谁，不等后面的慢虫
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res: return res
 
     return None
 
@@ -64,7 +84,7 @@ def get_yahoo_history(ticker):
 def get_yahoo_quote(ticker):
     url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
     try:
-        r = shared_session.get(url, timeout=3.5)
+        r = shared_session.get(url, timeout=4.0)
         if r.status_code == 200:
             res = r.json().get('quoteResponse', {}).get('result', [])
             if res: return res[0].get('regularMarketPrice')
@@ -75,7 +95,7 @@ def get_yahoo_quote(ticker):
 
 def get_lme_spread():
     url = "https://www.westmetall.com/en/markdaten.php"
-    html = fetch_html_with_fallback(url)
+    html = fetch_html_concurrently(url) # 调用对冲并发器
     if html:
         try:
             match = re.search(r'Copper\s*</a>.*?<a[^>]*>\s*([\d,\.]+)\s*</a>.*?<a[^>]*>\s*([\d,\.]+)\s*</a>', html, re.IGNORECASE | re.DOTALL)
@@ -101,18 +121,30 @@ def get_cips_structural_news():
     return "系统未检索到本年度 CIPS 官方重磅数据"
 
 def get_cnh_hibor():
-    real_api_url = "https://www.bochk.com/whk/rates/cnyHiborRates/cnyHiborRates-enquiry.action?lang=cn"
-    html = fetch_html_with_fallback(real_api_url)
-    if html:
-        try:
+    """【极限竞速】中银香港直连与雅虎兜底同时发射，谁快用谁"""
+    def fetch_boc():
+        html = fetch_html_concurrently("https://www.bochk.com/whk/rates/cnyHiborRates/cnyHiborRates-enquiry.action?lang=cn")
+        if html:
             on_match = re.search(r'(?:Overnight|隔夜)[^\d]*?([\d\.]+)\s*%?', html, re.IGNORECASE)
             if on_match: return float(on_match.group(1)), "隔夜(BOC)"
-            w1_match = re.search(r'(?:1\s*Week|1星期|1周)[^\d]*?([\d\.]+)\s*%?', html, re.IGNORECASE)
-            if w1_match: return float(w1_match.group(1)), "1周(BOC)"
-        except: pass
+        return None
 
-    # 【极限提速】如果中银失效，只抓一次雅虎瞬时报价兜底，不再遍历历史数据拖慢速度
-    val = get_yahoo_quote("CNHON=X")
-    if val is not None: return val, "隔夜(YQ)"
+    # 开 3 个线程，让中银、雅虎瞬时、雅虎历史同时去抢
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        fut_boc = executor.submit(fetch_boc)
+        fut_yq = executor.submit(get_yahoo_quote, "CNHON=X")
+        fut_yh = executor.submit(get_yahoo_history, "CNHON=X")
+
+        # 最高优先级：中银香港 (等待最多4秒)
+        boc_res = fut_boc.result()
+        if boc_res: return boc_res
+
+        # 降级：雅虎瞬时报价
+        yq_res = fut_yq.result()
+        if yq_res: return yq_res, "隔夜(YQ)"
+
+        # 终极兜底：雅虎历史
+        yh_res = fut_yh.result()
+        if yh_res and yh_res[0]: return yh_res[0], "隔夜(YH)"
 
     return None, "全断流"
