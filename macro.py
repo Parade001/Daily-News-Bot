@@ -29,7 +29,7 @@ def format_cell(dynamic_text, static_text):
 
 def extract_factors(api_key):
     f = {}
-    # 【性能修复】重新拉回满载 20 线程，绝不允许任务排队！
+    # 【性能稳固】维持 20 线程满载，一波流获取所有数据
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         futures = {
             "vix": executor.submit(get_yahoo_history, "^VIX"),
@@ -229,6 +229,7 @@ def fetch_macro_indicators(fred_api_key=None):
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_f = executor.submit(extract_factors, fred_api_key)
         future_cips = executor.submit(get_cips_structural_news)
+
         f = future_f.result()
         cips_news = future_cips.result()
 
@@ -245,27 +246,36 @@ def fetch_macro_indicators(fred_api_key=None):
     md += "👉 **[点击查看：全球核心资产 热力图 (World)](https://finviz.com/map.ashx?t=geo)**\n\n"
     md += "---\n\n"
 
+    # 【这里是核心！满血找回 Level 9 的风险 OS 面板】
     regime_emoji = {"RISK_ON": "🚀 狂暴多头", "NORMAL": "⚖️ 常态震荡", "DRAWDOWN": "🛡️ 回撤逆风期", "CRISIS": "🚨 宏观危机"}
     md += "## 🧭 桥水级：动态风险操作系统 (Risk OS - Level 9)\n\n"
     md += "| 真实净值(NAV) | 当前回撤 | 今日执行摩擦成本 | 宏观状态机(Regime) | 动态风险预算乘数 |\n"
     md += "| :--- | :--- | :--- | :--- | :--- |\n"
-    md += f"| **{raw_f['system_nav']:.4f}** | **{raw_f['system_dd']*100:.2f}%** | **-{raw_f['friction_cost']*10000:.1f} bps** | **{regime_emoji.get(raw_f['system_regime'], '未知')}** | **{raw_f['dd_penalty']:.2f}x** |\n\n"
+
+    # 确保兼容部分状态机字段可能缺失的情况，设置安全默认值
+    sys_nav = raw_f.get('system_nav', 1.0)
+    sys_dd = raw_f.get('system_dd', 0.0)
+    fric_cost = raw_f.get('friction_cost', 0.0)
+    sys_regime = raw_f.get('system_regime', 'NORMAL')
+    dd_pen = raw_f.get('dd_penalty', 1.0)
+
+    md += f"| **{sys_nav:.4f}** | **{sys_dd*100:.2f}%** | **-{fric_cost*10000:.1f} bps** | **{regime_emoji.get(sys_regime, '未知')}** | **{dd_pen:.2f}x** |\n\n"
 
     md += "| 宏观风险维度 (Risk Dimension) | 系统当前暴露量 | 设定预算上限 (Budget) | 风险诊断状态 |\n"
     md += "| :--- | :--- | :--- | :--- |\n"
 
     r_rate = risk_exp.get('rate', 0)
-    r_budget = 1.5 * raw_f['dd_penalty']
+    r_budget = 1.5 * dd_pen
     r_state = "🔴 超出预算 (限制压降中)" if r_rate > r_budget else ("🟡 逼近红线" if r_rate > r_budget*0.8 else "🟢 安全余量充足")
     md += f"| **利率杀估值风险 (Rate Risk)** | **{r_rate:.2f}** | {r_budget:.2f} | {r_state} |\n"
 
     l_rate = risk_exp.get('liquidity', 0)
-    l_budget = 2.0 * raw_f['dd_penalty']
+    l_budget = 2.0 * dd_pen
     l_state = "🔴 超出预算 (限制压降中)" if l_rate > l_budget else ("🟡 逼近红线" if l_rate > l_budget*0.8 else "🟢 安全余量充足")
     md += f"| **全球流动性枯竭 (Liquidity Risk)** | **{l_rate:.2f}** | {l_budget:.2f} | {l_state} |\n"
 
     c_rate = risk_exp.get('china_macro', 0)
-    c_budget = 1.0 * raw_f['dd_penalty']
+    c_budget = 1.0 * dd_pen
     c_state = "🔴 超出预算 (限制压降中)" if c_rate > c_budget else "🟢 安全余量充足"
     md += f"| **中国/新兴市场衰退 (China Macro)** | **{c_rate:.2f}** | {c_budget:.2f} | {c_state} |\n\n"
     md += "---\n\n"

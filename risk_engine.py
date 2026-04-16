@@ -1,6 +1,6 @@
 import os
 import json
-from quant_calc import calc_ma, calc_ma_slope, calc_volatility_z, calc_correlation, get_ret
+from quant_calc import calc_ma, calc_ma_slope, calc_volatility_z, calc_correlation, get_ret, z_to_position
 
 STATE_FILE = "macro_state.json"
 
@@ -25,13 +25,6 @@ def save_state(state_dict):
         with open(STATE_FILE, 'w', encoding='utf-8') as f:
             json.dump(state_dict, f)
     except: pass
-
-def z_to_position(z):
-    if z <= 0: return 0.0
-    if z <= 1.0: return z * 0.3
-    if z <= 2.0: return 0.3 + (z - 1.0) * 0.4
-    if z <= 3.0: return 0.7 + (z - 2.0) * 0.3
-    return 1.0
 
 def execute_quant_strategy(f):
     pos, const, action = {}, {}, {}

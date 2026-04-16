@@ -54,6 +54,13 @@ def calc_ema(history, span=10):
     ema.reverse()
     return ema
 
+def z_to_position(z):
+    if z <= 0: return 0.0
+    if z <= 1.0: return z * 0.3
+    if z <= 2.0: return 0.3 + (z - 1.0) * 0.4
+    if z <= 3.0: return 0.7 + (z - 2.0) * 0.3
+    return 1.0
+
 def get_ret(hist):
     if not hist or len(hist) < 2: return 0.0
     return (hist[0] - hist[1]) / hist[1]

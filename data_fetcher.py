@@ -6,7 +6,6 @@ import concurrent.futures
 from http_client import shared_session
 
 def fetch_with_retry(url, is_json=False, max_retries=2, timeout=4.0):
-    """【极限极速】砍掉多余重试，限制绝对超时时间为 4 秒"""
     for i in range(max_retries):
         try:
             r = shared_session.get(url, timeout=timeout)
@@ -48,16 +47,10 @@ def fetch_html_concurrently(url):
 
     # 开 3 个独立线程同时去抢数据
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [
-            executor.submit(try_direct),
-            executor.submit(try_allorigins),
-            executor.submit(try_codetabs)
-        ]
-        # as_completed 机制：谁第一个完成，就立刻返回谁，不等后面的慢虫
+        futures = [executor.submit(try_direct), executor.submit(try_allorigins), executor.submit(try_codetabs)]
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
             if res: return res
-
     return None
 
 def get_fred_history(series_id, api_key, limit=260, force_daily=False):
@@ -91,11 +84,9 @@ def get_yahoo_quote(ticker):
     except: pass
     return None
 
-# ================== 2. 专项数据抓取 ==================
-
 def get_lme_spread():
     url = "https://www.westmetall.com/en/markdaten.php"
-    html = fetch_html_concurrently(url) # 调用对冲并发器
+    html = fetch_html_concurrently(url)
     if html:
         try:
             match = re.search(r'Copper\s*</a>.*?<a[^>]*>\s*([\d,\.]+)\s*</a>.*?<a[^>]*>\s*([\d,\.]+)\s*</a>', html, re.IGNORECASE | re.DOTALL)
