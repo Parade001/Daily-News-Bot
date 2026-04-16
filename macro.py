@@ -29,7 +29,8 @@ def format_cell(dynamic_text, static_text):
 
 def extract_factors(api_key):
     f = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+    # 【性能修复】重新拉回满载 20 线程，绝不允许任务排队！
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
         futures = {
             "vix": executor.submit(get_yahoo_history, "^VIX"),
             "move": executor.submit(get_yahoo_history, "^MOVE"),

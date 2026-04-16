@@ -7,7 +7,8 @@ from http_client import shared_session
 def fetch_with_retry(url, is_json=False, max_retries=3):
     for i in range(max_retries):
         try:
-            r = shared_session.get(url, timeout=10)
+            # 【提速核心】强制 5 秒超时，绝不给慢节点挂起线程的机会
+            r = shared_session.get(url, timeout=5)
             if r.status_code == 200: return r.json() if is_json else r.text
         except Exception: time.sleep(2 ** i)
     return None
@@ -20,11 +21,11 @@ def fetch_html_with_fallback(url):
         "Referer": "https://www.google.com/"
     }
     try:
-        r = shared_session.get(url, headers=headers, timeout=10)
+        r = shared_session.get(url, headers=headers, timeout=5) # 5秒
         if r.status_code == 200 and "<title>Just a moment" not in r.text: return r.text
     except: pass
     try:
-        r = shared_session.get(f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}", timeout=5)
+        r = shared_session.get(f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}", timeout=5) # 5秒
         if r.status_code == 200:
             html = r.json().get("contents", "")
             if html and "<title>Just a moment" not in html: return html
