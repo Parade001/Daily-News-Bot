@@ -4,32 +4,40 @@ import urllib.parse
 import feedparser
 from http_client import shared_session
 
-def fetch_with_retry(url, is_json=False, max_retries=3):
+def fetch_with_retry(url, is_json=False, max_retries=2):
+    """【极限提速】砍掉重试次数至2次，取消指数睡眠"""
     for i in range(max_retries):
         try:
-            # 【提速核心】强制 5 秒超时，绝不给慢节点挂起线程的机会
-            r = shared_session.get(url, timeout=5)
+            # 强制 3.5 秒超时，绝不给慢节点挂起线程的机会
+            r = shared_session.get(url, timeout=3.5)
             if r.status_code == 200: return r.json() if is_json else r.text
-        except Exception: time.sleep(2 ** i)
+        except Exception:
+            time.sleep(0.5) # 最多只停顿 0.5 秒，行就行，不行拉倒
     return None
 
 def fetch_html_with_fallback(url):
+    """【极限提速】砍掉多余跳板，Fail-Fast 快速失败"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://www.google.com/"
     }
+
+    # 1. 尝试直连 (3.5秒)
     try:
-        r = shared_session.get(url, headers=headers, timeout=5) # 5秒
+        r = shared_session.get(url, headers=headers, timeout=3.5)
         if r.status_code == 200 and "<title>Just a moment" not in r.text: return r.text
     except: pass
+
+    # 2. 仅保留最快的一个跳板 (3.5秒)
     try:
-        r = shared_session.get(f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}", timeout=5) # 5秒
+        r = shared_session.get(f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}", timeout=3.5)
         if r.status_code == 200:
             html = r.json().get("contents", "")
             if html and "<title>Just a moment" not in html: return html
     except: pass
+
     return None
 
 def get_fred_history(series_id, api_key, limit=260, force_daily=False):
@@ -56,12 +64,14 @@ def get_yahoo_history(ticker):
 def get_yahoo_quote(ticker):
     url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
     try:
-        r = shared_session.get(url, timeout=5)
+        r = shared_session.get(url, timeout=3.5)
         if r.status_code == 200:
             res = r.json().get('quoteResponse', {}).get('result', [])
             if res: return res[0].get('regularMarketPrice')
     except: pass
     return None
+
+# ================== 2. 专项数据抓取 ==================
 
 def get_lme_spread():
     url = "https://www.westmetall.com/en/markdaten.php"
@@ -100,11 +110,9 @@ def get_cnh_hibor():
             w1_match = re.search(r'(?:1\s*Week|1星期|1周)[^\d]*?([\d\.]+)\s*%?', html, re.IGNORECASE)
             if w1_match: return float(w1_match.group(1)), "1周(BOC)"
         except: pass
-    tickers = [("CNHON=X", "隔夜"), ("CNH1WD=X", "1周")]
-    for ticker, name in tickers:
-        val = get_yahoo_quote(ticker)
-        if val is not None: return val, f"{name}(YQ)"
-    for ticker, name in tickers:
-        val, _ = get_yahoo_history(ticker)
-        if val is not None: return val, f"{name}(YH)"
+
+    # 【极限提速】如果中银失效，只抓一次雅虎瞬时报价兜底，不再遍历历史数据拖慢速度
+    val = get_yahoo_quote("CNHON=X")
+    if val is not None: return val, "隔夜(YQ)"
+
     return None, "全断流"
