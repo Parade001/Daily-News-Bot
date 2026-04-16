@@ -7,10 +7,11 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from http_client import shared_session
 
-# 【核心升级】：为大模型也配置带防 429 熔断和 50 线程容量的专属 Session
+# 【极致提速】：阉割大模型的重试执念，遇到 429 拥堵直接快速失败 (Fail-Fast)
 def create_deepseek_session():
     session = requests.Session()
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    # total=0：坚决不重试。如果遇到 429 排队，直接抛异常，走底层 fallback 输出英文
+    retries = Retry(total=0, status_forcelist=[429, 500, 502, 503, 504])
     adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50, max_retries=retries)
     session.mount('https://', adapter)
     return session
@@ -33,8 +34,9 @@ def batch_translate_deepseek(titles, api_key):
     }
 
     try:
-        response = deepseek_session.post("https://api.deepseek.com/chat/completions", headers=headers, json=payload, timeout=20)
-        response.raise_for_status() # 确保触发 HTTP 错误从而重试
+        # 【极致提速】：翻译 3 句话最多给 8 秒，绝不允许拖累主线程
+        response = deepseek_session.post("https://api.deepseek.com/chat/completions", headers=headers, json=payload, timeout=8)
+        response.raise_for_status()
         content = response.json()['choices'][0]['message']['content'].strip()
 
         translated_dict = {}
@@ -49,6 +51,7 @@ def batch_translate_deepseek(titles, api_key):
             result.append(translated_dict.get(i, titles[i].replace('|', '-')))
         return result
     except Exception as e:
+        # 只要超时、被 429 限流、报错，瞬间返回英文原文，不浪费一毫秒
         return [t.replace('|', '-') for t in titles]
 
 def process_single_site(category, site_info, api_key):
@@ -57,7 +60,8 @@ def process_single_site(category, site_info, api_key):
     url = site_info["url"]
 
     try:
-        res = shared_session.get(url, timeout=15)
+        # 【极致提速】：获取 RSS 限制为 5 秒，装死直接跳过
+        res = shared_session.get(url, timeout=5)
         feed = feedparser.parse(res.content)
 
         if not feed.entries:
@@ -67,6 +71,7 @@ def process_single_site(category, site_info, api_key):
         original_titles = [getattr(e, 'title', '无标题') for e in entries]
         links = [getattr(e, 'link', '#') for e in entries]
 
+        # 尝试调用翻译
         zh_titles = batch_translate_deepseek(original_titles, api_key)
 
         news_links_html = ""
