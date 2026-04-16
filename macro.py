@@ -1,3 +1,5 @@
+import os
+import json
 import math
 import statistics
 import urllib.parse
@@ -7,16 +9,40 @@ import feedparser
 import concurrent.futures
 from http_client import shared_session
 
+# ================== 0. 状态机持久化 (Regime State Machine) ==================
+STATE_FILE = "macro_state.json"
+
+def load_state():
+    """【LEVEL 9】加载深度记忆：包含仓位、真实净值(扣除滑点)、高水位线与宏观状态"""
+    default_state = {
+        "pos": {"VOO": 0.0, "QQQ": 0.0, "GOLD": 0.0, "COPX": 0.0},
+        "risk_comp": 0.0,
+        "nav_real": 1.0,      # 真实净值 (已扣除执行成本)
+        "hwm": 1.0,           # 历史高水位
+        "regime": "NORMAL"    # 宏观状态机
+    }
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return {**default_state, **data}
+        except: pass
+    return default_state
+
+def save_state(state_dict):
+    try:
+        with open(STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(state_dict, f)
+    except: pass
+
 # ================== 1. 底层网络与容错 ==================
 
 def fetch_with_retry(url, is_json=False, max_retries=3):
     for i in range(max_retries):
         try:
             r = shared_session.get(url, timeout=10)
-            if r.status_code == 200:
-                return r.json() if is_json else r.text
-        except:
-            time.sleep(2 ** i)
+            if r.status_code == 200: return r.json() if is_json else r.text
+        except Exception: time.sleep(2 ** i)
     return None
 
 def fetch_html_with_fallback(url):
@@ -26,7 +52,6 @@ def fetch_html_with_fallback(url):
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://www.google.com/"
     }
-
     try:
         r = shared_session.get(url, headers=headers, timeout=10)
         if r.status_code == 200 and "<title>Just a moment" not in r.text and "Cloudflare" not in r.text:
@@ -37,16 +62,8 @@ def fetch_html_with_fallback(url):
         r = shared_session.get(f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}", timeout=15)
         if r.status_code == 200:
             html = r.json().get("contents", "")
-            if html and "<title>Just a moment" not in html:
-                return html
+            if html and "<title>Just a moment" not in html: return html
     except: pass
-
-    try:
-        r = shared_session.get(f"https://api.codetabs.com/v1/proxy/?quest={url}", timeout=15)
-        if r.status_code == 200 and "<title>Just a moment" not in r.text:
-            return r.text
-    except: pass
-
     return None
 
 def get_fred_history(series_id, api_key, limit=260, force_daily=False):
@@ -71,18 +88,16 @@ def get_yahoo_history(ticker):
     except: return None, []
 
 def get_yahoo_quote(ticker):
-    """【备用黑魔法】调用雅虎瞬时报价前端 API，无视历史 K 线断流"""
     url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
     try:
         r = shared_session.get(url, timeout=5)
         if r.status_code == 200:
             res = r.json().get('quoteResponse', {}).get('result', [])
-            if res:
-                return res[0].get('regularMarketPrice')
+            if res: return res[0].get('regularMarketPrice')
     except: pass
     return None
 
-# ================== 2. 专项数据抓取 (LME / CIPS) ==================
+# ================== 2. 专项数据抓取 ==================
 
 def get_lme_spread():
     url = "https://www.westmetall.com/en/markdaten.php"
@@ -95,10 +110,7 @@ def get_lme_spread():
                 cash = float(match.group(1).replace(',', ''))
                 m3 = float(match.group(2).replace(',', ''))
                 return f"${cash - m3:.2f}"
-            else:
-                return "DOM结构解析异常"
-        except Exception:
-            return "提取过程报错"
+        except: pass
     return "盾/跳板全拦截"
 
 def get_cips_structural_news():
@@ -110,43 +122,29 @@ def get_cips_structural_news():
             title = latest_news.title.replace("|", "-")
             link = latest_news.link
             pub_date = latest_news.published if hasattr(latest_news, 'published') else "近期"
-
             highlight_title = re.sub(r'(\d+(?:\.\d+)?(?:万亿|亿|万))', r'**\1**', title)
-            clickable_link = f"<a href='{link}' target='_blank' style='color:#1a73e8; text-decoration:underline;'>{highlight_title}</a>"
-
-            return f"{clickable_link} <br><span style='font-size:11px;color:#888;'>({pub_date})</span>"
+            return f"<a href='{link}' target='_blank' style='color:#1a73e8; text-decoration:underline;'>{highlight_title}</a> <br><span style='font-size:11px;color:#888;'>({pub_date})</span>"
     except: pass
     return "系统未检索到本年度 CIPS 官方重磅数据"
 
 def get_cnh_hibor():
-    """【终极修复】直捣黄龙：穿透 iframe 抓取中银香港底层真实数据源"""
     real_api_url = "https://www.bochk.com/whk/rates/cnyHiborRates/cnyHiborRates-enquiry.action?lang=cn"
-
     html = fetch_html_with_fallback(real_api_url)
-
     if html:
         try:
             on_match = re.search(r'(?:Overnight|隔夜)[^\d]*?([\d\.]+)\s*%?', html, re.IGNORECASE)
             if on_match: return float(on_match.group(1)), "隔夜(BOC)"
-
             w1_match = re.search(r'(?:1\s*Week|1星期|1周)[^\d]*?([\d\.]+)\s*%?', html, re.IGNORECASE)
             if w1_match: return float(w1_match.group(1)), "1周(BOC)"
-
-            m1_match = re.search(r'(?:1\s*Month|1个月)[^\d]*?([\d\.]+)\s*%?', html, re.IGNORECASE)
-            if m1_match: return float(m1_match.group(1)), "1个月(BOC)"
-        except:
-            pass
-
-    tickers = [("CNHON=X", "隔夜"), ("CNH1WD=X", "1周"), ("CNH1MD=X", "1个月")]
+        except: pass
+    tickers = [("CNHON=X", "隔夜"), ("CNH1WD=X", "1周")]
     for ticker, name in tickers:
         val = get_yahoo_quote(ticker)
         if val is not None: return val, f"{name}(YQ)"
-
     for ticker, name in tickers:
         val, _ = get_yahoo_history(ticker)
         if val is not None: return val, f"{name}(YH)"
-
-    return None, "官方与备用全断流"
+    return None, "全断流"
 
 # ================== 3. 量化数学模型 ==================
 
@@ -177,13 +175,23 @@ def calc_volatility_z(history, window=20):
     return calc_robust_z(vol_hist[0], vol_hist)
 
 def calc_momentum_z(history, window=3):
-    """【新增】一阶导动量加速过滤器 (Momentum Z-Score)"""
-    if not history or len(history) < window + 20:
-        return 0.0
-    # 计算特定窗口期的差值序列（动量）
+    if not history or len(history) < window + 20: return 0.0
     momentum_series = [history[i] - history[i+window] for i in range(len(history)-window)]
-    # 返回动量序列的 Robust Z-Score，反映当下的加速度是否异常极值
     return calc_robust_z(momentum_series[0], momentum_series)
+
+def calc_correlation(x, y, window=60):
+    if not x or not y: return 0.0
+    min_len = min(len(x), len(y), window)
+    if min_len < 20: return 0.0
+    slice_x, slice_y = x[:min_len], y[:min_len]
+
+    mean_x, mean_y = sum(slice_x)/min_len, sum(slice_y)/min_len
+    cov = sum((a - mean_x) * (b - mean_y) for a, b in zip(slice_x, slice_y))
+    var_x = sum((a - mean_x)**2 for a in slice_x)
+    var_y = sum((b - mean_y)**2 for b in slice_y)
+
+    if var_x < 1e-8 or var_y < 1e-8: return 0.0
+    return cov / math.sqrt(var_x * var_y)
 
 def calc_ema(history, span=10):
     if not history: return []
@@ -202,12 +210,21 @@ def z_to_position(z):
     if z <= 3.0: return 0.7 + (z - 2.0) * 0.3
     return 1.0
 
+def get_ret(hist):
+    if not hist or len(hist) < 2: return 0.0
+    return (hist[0] - hist[1]) / hist[1]
+
+def get_daily_change(history):
+    if not history or len(history) < 2: return "0.00%"
+    chg = get_ret(history) * 100
+    color = "#d93025" if chg < 0 else ("#1e8e3e" if chg > 0 else "#555")
+    sign = "+" if chg > 0 else ""
+    return f"<span style='color:{color}; font-weight:bold;'>{sign}{chg:.2f}%</span>"
+
 def pos_to_str(pos):
     pct = int(pos * 100)
-    if pct == 0: return "🚫 空仓 (0%)"
-    if pct <= 30: return f"🟡 试探 ({pct}%)"
-    if pct <= 70: return f"🟢 标配 ({pct}%)"
-    return f"🔥 重仓 ({pct}%)"
+    if pct == 0: return "0%"
+    return f"{pct}%"
 
 def fmt_val(val, suffix="", precision=2):
     if val is None: return "[无报价]"
@@ -217,8 +234,7 @@ def fmt_val(val, suffix="", precision=2):
 
 def extract_factors(api_key):
     f = {}
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
         futures = {
             "vix": executor.submit(get_yahoo_history, "^VIX"),
             "move": executor.submit(get_yahoo_history, "^MOVE"),
@@ -232,12 +248,11 @@ def extract_factors(api_key):
             "hibor": executor.submit(get_cnh_hibor),
             "usd_cnh": executor.submit(get_yahoo_history, "USDCNH=X"),
             "usd_cny": executor.submit(get_yahoo_history, "USDCNY=X"),
-            "hkd_cny": executor.submit(get_yahoo_history, "HKDCNY=X"),
-            "cny_hkd": executor.submit(get_yahoo_history, "CNYHKD=X"),
             "lme": executor.submit(get_lme_spread),
             "walcl": executor.submit(get_fred_history, "WALCL", api_key, limit=300, force_daily=True),
             "tga": executor.submit(get_fred_history, "WTREGEN", api_key, limit=300, force_daily=True),
             "voo": executor.submit(get_yahoo_history, "VOO"),
+            "qqq": executor.submit(get_yahoo_history, "QQQ"),
             "gold": executor.submit(get_yahoo_history, "GC=F"),
             "copx": executor.submit(get_yahoo_history, "COPX")
         }
@@ -255,17 +270,21 @@ def extract_factors(api_key):
 
         usd_cnh_cur, _ = futures["usd_cnh"].result()
         usd_cny_cur, _ = futures["usd_cny"].result()
-        hkd_cny_cur, _ = futures["hkd_cny"].result()
-        cny_hkd_cur, _ = futures["cny_hkd"].result()
         lme_spread = futures["lme"].result()
         _, walcl = futures["walcl"].result()
         _, tga = futures["tga"].result()
 
         f['voo_cur'], f['voo_hist'] = futures["voo"].result()
+        f['qqq_cur'], f['qqq_hist'] = futures["qqq"].result()
         f['gold_cur'], f['gold_hist'] = futures["gold"].result()
         f['copx_cur'], f['copx_hist'] = futures["copx"].result()
 
-    spread_pips = f"{(usd_cnh_cur - usd_cny_cur) * 10000:.0f} pips" if (usd_cnh_cur and usd_cny_cur) else "无报价"
+    if usd_cnh_cur is not None and usd_cny_cur is not None:
+        cnh_stress_pips = (usd_cnh_cur - usd_cny_cur) * 10000
+        spread_pips_str = f"{cnh_stress_pips:.0f} pips"
+    else:
+        cnh_stress_pips = 0.0
+        spread_pips_str = "无报价"
 
     f['raw'] = {
         'hy': hy_cur, 'rr': rr_cur, 'us10': us10_cur, 'dxy': dxy_cur,
@@ -273,9 +292,9 @@ def extract_factors(api_key):
         'hibor': hibor_cur, 'hibor_name': hibor_name,
         'lme_spread': lme_spread,
         'usd_cnh': usd_cnh_cur, 'usd_cny': usd_cny_cur,
-        'hkd_cny': hkd_cny_cur, 'cny_hkd': cny_hkd_cur,
-        'cnh_cny_spread': spread_pips
+        'cnh_cny_spread': spread_pips_str
     }
+    f['cnh_stress_pips'] = cnh_stress_pips
 
     f['z_vix'] = calc_robust_z(vix[0], vix) if vix else 0.0
     f['z_move'] = calc_robust_z(move[0], move) if move else 0.0
@@ -284,10 +303,14 @@ def extract_factors(api_key):
     f['z_us10y'] = calc_robust_z(us10[0], us10) if us10 else 0.0
     f['z_dxy'] = calc_robust_z(dxy[0], dxy) if dxy else 0.0
 
-    # 【新增】引入实际利率的动量极值因子 (加速度)
+    f['z_yc'] = calc_robust_z(yc_cur, yc) if yc else 0.0
+    f['z_t10'] = calc_robust_z(t10_cur, t10) if t10 else 0.0
+
+    f['z_vix_mom'] = calc_momentum_z(vix, window=5)
     f['z_realrate_mom'] = calc_momentum_z(rr, window=3)
 
     f['liq_delta_z'] = 0.0
+    f['liq_impulse'] = 0.0
     if walcl and rrp and tga:
         min_len = min(len(walcl), len(rrp), len(tga))
         if min_len > 30:
@@ -298,80 +321,205 @@ def extract_factors(api_key):
                 raw_deltas.append(l_cur - l_past)
             smoothed = calc_ema(raw_deltas, span=10)
             f['liq_delta_z'] = calc_robust_z(smoothed[0], smoothed) if smoothed else 0.0
+            liq_mom_z = calc_momentum_z(smoothed, window=5) if smoothed else 0.0
+            f['liq_impulse'] = f['liq_delta_z'] + 0.5 * liq_mom_z
 
     return f
 
 def calculate_quant_execution(f):
-    pos, const = {}, {}
-    risk_comp = max(f['z_vix'], f['z_move'], f['z_hy']) * 0.6 + sum([f['z_vix'], f['z_move'], f['z_hy']])/3.0 * 0.4
+    pos, const, action = {}, {}, {}
 
-    # 【新增改动 3】风险非线性惩罚 (钝化低风险干扰，放大高风险恐慌)
+    # ================== 【LEVEL 9: 真实执行反馈 (Real PnL Feedback)】 ==================
+    state = load_state()
+    prev_pos = state.get("pos", {"VOO": 0.0, "QQQ": 0.0, "GOLD": 0.0, "COPX": 0.0})
+
+    # 1. 计算理论涨跌与真实换手摩擦成本 (Slippage & Spread = ~15 bps per turnover)
+    port_ret = 0.0
+    port_ret += prev_pos.get("VOO", 0) * get_ret(f.get('voo_hist'))
+    port_ret += prev_pos.get("QQQ", 0) * get_ret(f.get('qqq_hist'))
+    port_ret += prev_pos.get("GOLD", 0) * get_ret(f.get('gold_hist'))
+    port_ret += prev_pos.get("COPX", 0) * get_ret(f.get('copx_hist'))
+
+    # 假设每次状态转换的过往 turnover 已扣除。由于是单日结算，用静态滞后模拟。
+    nav_real = state.get("nav_real", 1.0) * (1 + port_ret)
+    hwm = max(state.get("hwm", 1.0), nav_real)
+    drawdown = (hwm - nav_real) / hwm if hwm > 0 else 0.0
+
+    # ================== 【LEVEL 9: 未知风险极端惩罚 (Tail Proxy)】 ==================
+    risk_comp_base = max(f['z_vix'], f['z_move'], f['z_hy']) * 0.6 + sum([f['z_vix'], f['z_move'], f['z_hy']])/3.0 * 0.4
+    risk_comp_adj = risk_comp_base + 0.5 * max(0, f.get('z_vix_mom', 0.0))
+
+    # 未知黑天鹅代理：VIX与MOVE同时出现极端变异加速度
+    tail_shock_proxy = max(0, f.get('z_vix_mom', 0.0) + f.get('z_move', 0.0))
+
+    # 四相宏观状态机判定
+    if risk_comp_adj > 2.5 or tail_shock_proxy > 4.0: current_regime = "CRISIS"
+    elif drawdown > 0.05: current_regime = "DRAWDOWN"
+    elif risk_comp_adj < 0.8 and drawdown < 0.02: current_regime = "RISK_ON"
+    else: current_regime = "NORMAL"
+
     def risk_penalty(r):
-        if r < 1.0:
-            return r * 0.3
-        elif r < 2.0:
-            return r * 0.8
-        else:
-            return r * 1.5
+        if r < 1.0: return r * 0.3
+        elif r < 2.0: return r * 0.8
+        else: return r * 1.5
 
-    w_liq, w_risk, w_rate = (0.3, 1.2, 0.8) if f['z_us10y'] > 1.5 else (0.7, 0.8, 0.4)
+    def rate_penalty(z):
+        if z < 0: return z * 0.5
+        elif z < 1.5: return z * 1.0
+        else: return z * 2.0
 
-    # 【新增改动 1】全面应用 risk_penalty，并将估值压制主引擎由 US10Y 切换为 实际利率(TIPS)
-    z_voo = (f['liq_delta_z'] * w_liq) - (risk_penalty(risk_comp) * w_risk) - (f['z_realrate'] * 1.2)
-    z_gold = -(f['z_realrate'] * 1.0) - (f['z_dxy'] * 0.4) + (risk_penalty(risk_comp) * 0.3)
-    z_copx = -(f['z_dxy'] * 0.6) + (f['liq_delta_z'] * w_liq) - (risk_penalty(risk_comp) * w_risk)
+    # ================== 【LEVEL 9: 动态非平稳权重 (Regime Dynamic Weights)】 ==================
+    if current_regime == "CRISIS":
+        w_liq, w_risk, w_rate = 0.1, 2.0, 1.0 # 危机中无视放水，只看风险
+    elif current_regime == "DRAWDOWN":
+        w_liq, w_risk, w_rate = 0.4, 1.2, 0.8 # 回撤期趋于保守
+    else:
+        w_liq, w_risk, w_rate = (0.3, 1.2, 0.8) if f['z_us10y'] > 1.5 else (0.8, 0.8, 0.4)
 
-    def apply_filters(price, history, base_z):
-        if not history or len(history) < 210: return z_to_position(base_z), "数据不足"
+    usd_tightening = max(0, f['z_dxy'])
+    global_liq = f['liq_impulse'] - 0.2 * usd_tightening
+    z_growth = -f['z_yc']
+
+    z_voo = (global_liq * w_liq) - (risk_penalty(risk_comp_adj) * w_risk) - (rate_penalty(f['z_realrate']) * 1.2)
+    z_qqq = (global_liq * w_liq * 1.5) - (risk_penalty(risk_comp_adj) * w_risk * 1.2) - (rate_penalty(f['z_realrate']) * 1.5)
+
+    gold_penalty = rate_penalty(f['z_realrate']) + 0.5 * max(0, f.get('z_realrate_mom', 0.0))
+    z_gold = (-gold_penalty * 1.0 - f['z_dxy'] * 0.5 + f['z_t10'] * 0.8 + risk_penalty(risk_comp_adj) * 0.3)
+    cnh_stress = max(0, f.get('cnh_stress_pips', 0) / 300.0)
+    z_copx = -(f['z_dxy'] * 0.6) + (global_liq * w_liq) - (risk_penalty(risk_comp_adj) * w_risk) - cnh_stress + (z_growth * 0.5)
+
+    def apply_filters(price, history, base_z, vol_z_override):
+        if not history or len(history) < 210: return 0.0, "数据不足"
         ma200 = calc_ma(history, 200)
         slope = calc_ma_slope(history, 50, 10)
-        vol_z = calc_volatility_z(history, 20)
 
-        target = z_to_position(base_z)
+        # 【LEVEL 9: 不确定性概率折扣 (Confidence Multiplier)】
+        confidence = 1.0 / (1.0 + max(0, vol_z_override - 1.0) * 0.3)
+
+        target = z_to_position(base_z) * confidence # 乘以不确定性折扣
         msgs = []
-        if vol_z > 1.5:
-            target *= 0.5; msgs.append("高波动降仓")
+        if vol_z_override > 1.5: msgs.append(f"高波动折扣(x{confidence:.2f})")
 
-        if price < ma200 and slope < 0:
-            return 0.0, "🚨 破位向下(空仓)"
-        elif price >= ma200 and slope < 0:
-            target = min(target, 0.3); msgs.append("⚠️ 均线背离(限仓)")
-        elif price < ma200 and slope > 0:
-            target = min(target, 0.3); msgs.append("⚠️ 熊市反弹(限仓)")
-        # 【新增改动 2】右侧趋势确认增强 (顺势交易加持，避免完美错过主升浪)
-        elif price >= ma200 and slope > 0:
-            target = min(target + 0.3, 1.0); msgs.append("🚀 趋势确认(+30%)")
+        if price < ma200 and slope < 0: return 0.0, "🚨 破位向下"
+        elif price >= ma200 and slope < 0: target = min(target, 0.3); msgs.append("⚠️ 均线背离")
+        elif price < ma200 and slope > 0: target = min(target, 0.3); msgs.append("⚠️ 熊市反弹")
+        elif price >= ma200 and slope > 0: target = min(target + 0.3, 1.0); msgs.append("🚀 趋势确认")
 
-        return target, " | ".join(msgs) if msgs else "✅ 健康"
+        return target, " | ".join(msgs) if msgs else "✅ 结构健康"
 
-    pos["VOO"], const["VOO"] = apply_filters(f['voo_cur'], f['voo_hist'], z_voo)
-    pos["GOLD"], const["GOLD"] = apply_filters(f['gold_cur'], f['gold_hist'], z_gold)
-    pos["COPX"], const["COPX"] = apply_filters(f['copx_cur'], f['copx_hist'], z_copx)
+    # 提取各自资产自身的历史波动率，计算概率自信度
+    target_pos = {}
+    vol_voo = calc_volatility_z(f.get('voo_hist', []), 20)
+    vol_qqq = calc_volatility_z(f.get('qqq_hist', []), 20)
+    vol_gold = calc_volatility_z(f.get('gold_hist', []), 20)
+    vol_copx = calc_volatility_z(f.get('copx_hist', []), 20)
 
-    # 【新增风控】如果实际利率出现陡峭加速上行 (动量 Z > 1.5)，黄金底层估值受压，强制削减一半敞口
-    if f.get('z_realrate_mom', 0.0) > 1.5:
-        pos["GOLD"] *= 0.5
-        if const["GOLD"] == "✅ 健康":
-            const["GOLD"] = "🚨 实际利率加速上行"
+    target_pos["VOO"], const["VOO"] = apply_filters(f['voo_cur'], f['voo_hist'], z_voo, vol_voo)
+    target_pos["QQQ"], const["QQQ"] = apply_filters(f['qqq_cur'], f['qqq_hist'], z_qqq, vol_qqq)
+    target_pos["GOLD"], const["GOLD"] = apply_filters(f['gold_cur'], f['gold_hist'], z_gold, vol_gold)
+    target_pos["COPX"], const["COPX"] = apply_filters(f['copx_cur'], f['copx_hist'], z_copx, vol_copx)
+
+    # ================== 风险预算与归因 ==================
+    limit_corr = 1.0
+    limit_budget = 1.0
+    limit_tail = 1.0
+
+    corr_voo_qqq = calc_correlation(f.get('voo_hist', []), f.get('qqq_hist', []), window=60)
+    def corr_penalty_func(c):
+        if c < 0.7: return 1.0
+        elif c < 0.85: return 1.2
+        elif c < 0.9: return 1.4
+        else: return 1.7
+    effective_qqq = target_pos["QQQ"] * corr_penalty_func(corr_voo_qqq)
+    total_exposure = target_pos["VOO"] + effective_qqq + target_pos["COPX"]
+    if total_exposure > 2.0:
+        limit_corr = 2.0 / total_exposure
+        const["PORTFOLIO"] = f"⚖️ 高度相关(ρ={corr_voo_qqq:.2f})挤压敞口"
+
+    f['risk_exposure'] = {
+        "rate": target_pos["QQQ"] * 1.5 + target_pos["VOO"] * 0.8 + target_pos["GOLD"] * 1.0,
+        "liquidity": target_pos["VOO"] * 1.0 + target_pos["QQQ"] * 1.5 + target_pos["COPX"] * 1.0,
+        "china_macro": target_pos["COPX"] * 1.5
+    }
+
+    dd_penalty = max(0.5, 1.0 - drawdown * 4.0)
+    RISK_BUDGET = {
+        "rate": 1.5 * dd_penalty,
+        "liquidity": 2.0 * dd_penalty,
+        "china_macro": 1.0 * dd_penalty
+    }
+
+    triggered_budgets = []
+    for k in RISK_BUDGET:
+        if f['risk_exposure'][k] > RISK_BUDGET[k]:
+            overload = f['risk_exposure'][k] / RISK_BUDGET[k]
+            if (1.0 / overload) < limit_budget: limit_budget = 1.0 / overload
+            triggered_budgets.append(k)
+
+    if triggered_budgets:
+        budget_names = ",".join(triggered_budgets)
+        msg = f"🛡️ 触发[{budget_names}]极值预算控制"
+        const["PORTFOLIO"] = msg if "PORTFOLIO" not in const else const["PORTFOLIO"] + f" | {msg}"
+
+    if tail_shock_proxy > 4.0:
+        limit_tail = 0.5 # 黑天鹅极值无条件惩罚
+        const["GLOBAL"] = "🌪️ 侦测到未知极端宏观尾部，触发强制降维"
+    elif risk_comp_adj > 2.5:
+        limit_tail = 0.3
+        const["GLOBAL"] = "🔥 已知系统性极度恐慌：全线强制降至 30% 防深 V"
+
+    final_scale = min(limit_corr, limit_budget, limit_tail)
+    for k in ["VOO", "QQQ", "GOLD", "COPX"]:
+        target_pos[k] *= final_scale
+
+    # ================== 真实执行与换手率核算 ==================
+    daily_turnover = 0.0
+    for asset in ["VOO", "QQQ", "GOLD", "COPX"]:
+        target = target_pos[asset]
+        prev = prev_pos.get(asset, 0.0)
+
+        if target == 0.0:
+            pos[asset] = 0.0
+            action[asset] = "🛑 止损清仓 (Clear)"
         else:
-            const["GOLD"] += " | 🚨 实际利率加速上行"
+            alpha = 0.5 if target < prev else 0.2
+            if current_regime == "CRISIS" and target < prev: alpha = 0.8
 
-    if pos["VOO"] + pos["COPX"] > 1.2:
-        scale = 1.2 / (pos["VOO"] + pos["COPX"])
-        pos["VOO"] *= scale; pos["COPX"] *= scale
-        const["PORTFOLIO"] = "⚖️ 风险敞口过载，按比例压缩"
+            actual_pos = prev + (target - prev) * alpha
+            pos[asset] = actual_pos
 
-    if risk_comp > 2.5:
-        pos["VOO"] *= 0.3; pos["COPX"] *= 0.3
-        const["GLOBAL"] = "🔥 系统危机：保留 30% 底仓防深 V"
+            if abs(actual_pos - prev) < 0.02: action[asset] = "🔒 平滑微调 (Smooth)"
+            elif actual_pos > prev: action[asset] = "🟢 顺势加仓 (Scale In)"
+            else: action[asset] = "🔻 减持防守 (Scale Out)"
 
-    return pos, risk_comp, const, f
+        daily_turnover += abs(pos[asset] - prev)
+
+    # 【LEVEL 9核心】扣除换手摩擦 (15 bps/单边 turnover)，更新真实净值
+    friction_cost = daily_turnover * 0.0015
+    nav_real = nav_real - friction_cost
+
+    new_state = {
+        "pos": pos,
+        "risk_comp": risk_comp_adj,
+        "nav_real": nav_real,
+        "hwm": hwm,
+        "regime": current_regime
+    }
+    save_state(new_state)
+
+    f['system_nav'] = nav_real
+    f['system_dd'] = drawdown
+    f['system_regime'] = current_regime
+    f['dd_penalty'] = dd_penalty
+    f['daily_turnover'] = daily_turnover
+    f['friction_cost'] = friction_cost
+
+    return pos, action, risk_comp_adj, const, f
 
 # ================== 5. 动态解读引擎与面板 ==================
 
 def generate_dynamic_analysis(raw, raw_f, risk_comp):
     desc = {}
-
     lme_str = raw.get('lme_spread', '')
     if '$' in lme_str:
         try:
@@ -487,8 +635,9 @@ def fetch_macro_indicators(fred_api_key=None):
         f = future_f.result()
         cips_news = future_cips.result()
 
-    pos, risk_comp, constraints, raw_f = calculate_quant_execution(f)
+    pos, action, risk_comp, constraints, raw_f = calculate_quant_execution(f)
     raw = f['raw']
+    risk_exp = raw_f.get('risk_exposure', {})
 
     hibor_name = raw.get('hibor_name', '隔夜')
     desc = generate_dynamic_analysis(raw, raw_f, risk_comp)
@@ -499,29 +648,54 @@ def fetch_macro_indicators(fred_api_key=None):
     md += "👉 **[点击查看：全球核心资产 热力图 (World)](https://finviz.com/map.ashx?t=geo)**\n\n"
     md += "---\n\n"
 
-    md += "## 🤖 宏观策略控制台 (Signal → Portfolio 闭环)\n\n"
-    if "GLOBAL" in constraints: md += f"> **🚨 熔断控制**：{constraints['GLOBAL']}\n\n"
+    regime_emoji = {"RISK_ON": "🚀 狂暴多头", "NORMAL": "⚖️ 常态震荡", "DRAWDOWN": "🛡️ 回撤逆风期", "CRISIS": "🚨 宏观危机"}
+    md += "## 🧭 桥水级：动态风险操作系统 (Risk OS - Level 9)\n\n"
+    md += "| 真实净值(NAV) | 当前回撤 | 今日执行摩擦成本 | 宏观状态机(Regime) | 动态风险预算乘数 |\n"
+    md += "| :--- | :--- | :--- | :--- | :--- |\n"
+    md += f"| **{raw_f['system_nav']:.4f}** | **{raw_f['system_dd']*100:.2f}%** | **-{raw_f['friction_cost']*10000:.1f} bps** | **{regime_emoji.get(raw_f['system_regime'], '未知')}** | **{raw_f['dd_penalty']:.2f}x** |\n\n"
+
+    md += "| 宏观风险维度 (Risk Dimension) | 系统当前暴露量 | 设定预算上限 (Budget) | 风险诊断状态 |\n"
+    md += "| :--- | :--- | :--- | :--- |\n"
+
+    r_rate = risk_exp.get('rate', 0)
+    r_budget = 1.5 * raw_f['dd_penalty']
+    r_state = "🔴 超出预算 (限制压降中)" if r_rate > r_budget else ("🟡 逼近红线" if r_rate > r_budget*0.8 else "🟢 安全余量充足")
+    md += f"| **利率杀估值风险 (Rate Risk)** | **{r_rate:.2f}** | {r_budget:.2f} | {r_state} |\n"
+
+    l_rate = risk_exp.get('liquidity', 0)
+    l_budget = 2.0 * raw_f['dd_penalty']
+    l_state = "🔴 超出预算 (限制压降中)" if l_rate > l_budget else ("🟡 逼近红线" if l_rate > l_budget*0.8 else "🟢 安全余量充足")
+    md += f"| **全球流动性枯竭 (Liquidity Risk)** | **{l_rate:.2f}** | {l_budget:.2f} | {l_state} |\n"
+
+    c_rate = risk_exp.get('china_macro', 0)
+    c_budget = 1.0 * raw_f['dd_penalty']
+    c_state = "🔴 超出预算 (限制压降中)" if c_rate > c_budget else "🟢 安全余量充足"
+    md += f"| **中国/新兴市场衰退 (China Macro)** | **{c_rate:.2f}** | {c_budget:.2f} | {c_state} |\n\n"
+    md += "---\n\n"
+
+    md += "## 🤖 资产策略控制台 (Signal → Execution 闭环)\n\n"
+    if "GLOBAL" in constraints: md += f"> **🚨 尾部熔断**：{constraints['GLOBAL']}\n\n"
     if "PORTFOLIO" in constraints: md += f"> **⚖️ 组合风控**：{constraints['PORTFOLIO']}\n\n"
 
-    md += "| 资产 | 标的 | 今日目标仓位 | 状态引擎 (Regime & Filter) |\n"
-    md += "| :--- | :--- | :--- | :--- |\n"
-    md += f"| **美股大盘** | VOO | **{pos_to_str(pos['VOO'])}** | {constraints['VOO']} |\n"
-    md += f"| **避险黄金** | 18.HK | **{pos_to_str(pos['GOLD'])}** | {constraints['GOLD']} |\n"
-    md += f"| **大宗商品** | COPX | **{pos_to_str(pos['COPX'])}** | {constraints['COPX']} |\n\n"
+    md += "| 资产大类 | 今日涨跌幅 | EMA 平滑后仓位 | 💡 操作建议 (Action) | 状态引擎 (Regime) |\n"
+    md += "| :--- | :--- | :--- | :--- | :--- |\n"
+    md += f"| **标普500 (VOO)** | {get_daily_change(f['voo_hist'])} | **{pos_to_str(pos['VOO'])}** | **{action['VOO']}** | {constraints['VOO']} |\n"
+    md += f"| **纳指100 (QQQ)** | {get_daily_change(f['qqq_hist'])} | **{pos_to_str(pos['QQQ'])}** | **{action['QQQ']}** | {constraints['QQQ']} |\n"
+    md += f"| **避险黄金 (18.HK)** | {get_daily_change(f['gold_hist'])} | **{pos_to_str(pos['GOLD'])}** | **{action['GOLD']}** | {constraints['GOLD']} |\n"
+    md += f"| **大宗商品 (COPX)** | {get_daily_change(f['copx_hist'])} | **{pos_to_str(pos['COPX'])}** | **{action['COPX']}** | {constraints['COPX']} |\n\n"
 
     md += "## 📈 核心宏观全景面板 (指标判读分析)\n\n"
     md += "| 变量名称 | 最新绝对数值 | 因子状态 (Z-Score) | 核心驱动逻辑 (今日动态判读) |\n"
     md += "| :--- | :--- | :--- | :--- |\n"
 
     md += f"| **A. LME铜升贴水** | **{raw['lme_spread']}** | 物理逼空 | {format_cell(desc['A'], '现货贵于期货(>0)说明实体库存极缺')} |\n"
-    md += f"| **B. 逆回购(RRP)** | **{fmt_val(raw['rrp'], ' B', 1)}** | **{fmt_val(raw_f['liq_delta_z'])}** (净流动性) | {format_cell(desc['B'], '水库释放器，连同TGA构成美元总水位')} |\n"
+    md += f"| **B. 逆回购(RRP)** | **{fmt_val(raw['rrp'], ' B', 1)}** | **{fmt_val(raw_f['liq_impulse'])}** (流动脉冲) | {format_cell(desc['B'], '水库释放器，连同TGA构成美元总水位')} |\n"
 
     fx_str = f"在岸(CNY): **{fmt_val(raw['usd_cny'], precision=4)}**<br>离岸(CNH): **{fmt_val(raw['usd_cnh'], precision=4)}**<br>港币兑RMB: **{fmt_val(raw['hkd_cny'], precision=4)}**"
     md += f"| **C. 核心实时汇率** | {fx_str} | 价差: **{raw['cnh_cny_spread']}** | {format_cell(desc['C'], '价差剧烈扩大(>300)意味外资正在做空中国资产')} |\n"
 
     md += f"| **D. 盈亏通胀率** | **{fmt_val(raw['t10'], '%')}** | 远期定价 | {format_cell(desc['D'], '黄金的助推剂，突破前高需重仓')} |\n"
 
-    # 【UI优化】为 TIPS 添加灰色的 (T-1, FRED) 机构严谨标注
     md += f"| **E. 实际利率(TIPS)**| **{fmt_val(raw['rr'], '%')}** <span style='font-size:11px;color:#888;'>(T-1, FRED)</span> | **{fmt_val(raw_f['z_realrate'])}** | {format_cell(desc['E'], '黄金绝对反向锚，极高位时压制一切估值')} |\n"
 
     md += f"| **F. 高收益债利差** | **{fmt_val(raw['hy'], '%')}** | **{fmt_val(raw_f['z_hy'])}** (信用) | {format_cell(desc['F'], '企业违约生死线，破 5% 亮红灯')} |\n"
