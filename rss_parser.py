@@ -2,38 +2,62 @@ import time
 import requests
 import feedparser
 import re
+import urllib.parse
 import concurrent.futures
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from http_client import shared_session
 
-# 【极致提速】：阉割大模型的重试执念，遇到 429 拥堵直接快速失败 (Fail-Fast)
+# ================== 会话池配置 ==================
+
 def create_deepseek_session():
     session = requests.Session()
-    retries = Retry(total=0, status_forcelist=[429, 500, 502, 503, 504])
+    # 坚决不重试，遇到拥堵直接快速失败，降级输出英文
+    retries = Retry(total=0)
     adapter = HTTPAdapter(pool_connections=50, pool_maxsize=50, max_retries=retries)
     session.mount('https://', adapter)
     return session
 
-deepseek_session = create_deepseek_session()
-
-# 【防拦截核心修复】：为 RSS 配置百兆并发池，并伪装成真实浏览器！
 def create_rss_session():
     session = requests.Session()
-    # 核心修复：华盛顿邮报、AI News 等外媒有很强的 Cloudflare 反爬墙
-    # 必须加上真实的 User-Agent 和 Accept 头，否则 Python 默认请求会被瞬间 403 阻断！
+    # 伪装成真实的 Chrome 浏览器
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.9"
     })
-    retries = Retry(total=0) # 坚决不重试
+    retries = Retry(total=0)
     adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=retries)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
     return session
 
+deepseek_session = create_deepseek_session()
 rss_dedicated_session = create_rss_session()
 
+# ================== 核心抓取与翻译 ==================
+
+def fetch_rss_content(url):
+    """【反爬虫终极利器】：直连 + 跳板双重绕过"""
+    # 1. 尝试伪装浏览器直连 (4秒)
+    try:
+        res = rss_dedicated_session.get(url, timeout=4.0)
+        res.raise_for_status()
+        return res.content
+    except Exception:
+        pass
+
+    # 2. 如果 GitHub Actions 的云端 IP 被华盛顿邮报拉黑，动用 Allorigins 代理跳板 (4秒)
+    try:
+        proxy_url = f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}"
+        # 这里用普通的 requests 发送，避免复杂的 headers 反而干扰代理服务器
+        res = requests.get(proxy_url, timeout=4.0)
+        if res.status_code == 200:
+            data = res.json()
+            if "contents" in data and data["contents"]:
+                return data["contents"].encode('utf-8')
+    except Exception:
+        pass
+
+    return None
 
 def batch_translate_deepseek(titles, api_key):
     if not titles: return []
@@ -51,8 +75,7 @@ def batch_translate_deepseek(titles, api_key):
     }
 
     try:
-        # 翻译 3 句话最多给 6 秒，不拖累主线程
-        response = deepseek_session.post("https://api.deepseek.com/chat/completions", headers=headers, json=payload, timeout=6.0)
+        response = deepseek_session.post("https://api.deepseek.com/chat/completions", headers=headers, json=payload, timeout=8.0)
         response.raise_for_status()
         content = response.json()['choices'][0]['message']['content'].strip()
 
@@ -68,30 +91,31 @@ def batch_translate_deepseek(titles, api_key):
             result.append(translated_dict.get(i, titles[i].replace('|', '-')))
         return result
     except Exception as e:
-        # 只要超时、被 429 限流、报错，瞬间返回英文原文
+        # 大模型卡壳时秒退英文
         return [t.replace('|', '-') for t in titles]
-
 
 def process_single_site(category, site_info, api_key):
     site_name = site_info["site"]
     keywords = site_info["keywords"]
     url = site_info["url"]
 
-    try:
-        # 使用带伪装头的专属 session，超时设为 5 秒
-        res = rss_dedicated_session.get(url, timeout=5.0)
-        res.raise_for_status() # 如果遇到 403、404 等错误，直接抛出异常跳入 except
+    # 替换原本的 shared_session 抓取逻辑，启用抗封锁神器
+    content = fetch_rss_content(url)
 
-        feed = feedparser.parse(res.content)
+    if not content:
+        return f"| **{category}** | {site_name} | *{keywords}* | [抓取超时或IP被拦截] |\n"
+
+    try:
+        feed = feedparser.parse(content)
 
         if not feed.entries:
-            return f"| **{category}** | {site_name} | *{keywords}* | [暂无更新或被反爬墙拦截] |\n"
+            return f"| **{category}** | {site_name} | *{keywords}* | [暂无更新] |\n"
 
         entries = feed.entries[:3]
         original_titles = [getattr(e, 'title', '无标题') for e in entries]
         links = [getattr(e, 'link', '#') for e in entries]
 
-        # 尝试调用翻译
+        # 调用翻译
         zh_titles = batch_translate_deepseek(original_titles, api_key)
 
         news_links_html = ""
@@ -100,8 +124,7 @@ def process_single_site(category, site_info, api_key):
 
         return f"| **{category}** | {site_name} | *{keywords}* | {news_links_html} |\n"
     except Exception as e:
-        return f"| **{category}** | {site_name} | *{keywords}* | [抓取超时或数据解析异常] |\n"
-
+        return f"| **{category}** | {site_name} | *{keywords}* | [数据解析异常] |\n"
 
 def fetch_rss_news(rss_config, api_key):
     md_content = "## 📰 核心政经与大宗商品速递\n\n"
@@ -117,7 +140,6 @@ def fetch_rss_news(rss_config, api_key):
     print(f"📡 RSS 模块：准备并发抓取与翻译 {task_count} 个源...")
 
     results = []
-    # 动态分配线程，最高允许 50 个并发（一波流）
     max_threads = min(50, task_count) if task_count > 0 else 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
         futures = [executor.submit(process_single_site, cat, info, api_key) for cat, info in tasks]
