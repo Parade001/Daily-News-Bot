@@ -36,26 +36,54 @@ rss_dedicated_session = create_rss_session()
 # ================== 核心抓取与翻译 ==================
 
 def fetch_rss_content(url):
-    """【反爬虫终极利器】：直连 + 跳板双重绕过"""
-    # 1. 尝试伪装浏览器直连 (4秒)
-    try:
-        res = rss_dedicated_session.get(url, timeout=4.0)
-        res.raise_for_status()
-        return res.content
-    except Exception:
-        pass
+    """【终极穿甲弹】：并发对冲请求 (Direct + Allorigins + Codetabs)"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/rss+xml, application/xml, text/xml, */*;q=0.9"
+    }
 
-    # 2. 如果 GitHub Actions 的云端 IP 被华盛顿邮报拉黑，动用 Allorigins 代理跳板 (4秒)
-    try:
-        proxy_url = f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}"
-        # 这里用普通的 requests 发送，避免复杂的 headers 反而干扰代理服务器
-        res = requests.get(proxy_url, timeout=4.0)
-        if res.status_code == 200:
-            data = res.json()
-            if "contents" in data and data["contents"]:
-                return data["contents"].encode('utf-8')
-    except Exception:
-        pass
+    def try_direct():
+        try:
+            res = rss_dedicated_session.get(url, headers=headers, timeout=4.0)
+            res.raise_for_status()
+            # 防御 Cloudflare 的真人验证页面
+            if b"<title>Just a moment" not in res.content and b"Cloudflare" not in res.content:
+                return res.content
+        except: pass
+        return None
+
+    def try_allorigins():
+        try:
+            proxy_url = f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}"
+            res = requests.get(proxy_url, timeout=4.0)
+            if res.status_code == 200:
+                data = res.json()
+                if "contents" in data and data["contents"] and "<title>Just a moment" not in data["contents"]:
+                    return data["contents"].encode('utf-8')
+        except: pass
+        return None
+
+    def try_codetabs():
+        try:
+            proxy_url = f"https://api.codetabs.com/v1/proxy/?quest={url}"
+            res = requests.get(proxy_url, timeout=4.0)
+            if res.status_code == 200 and b"<title>Just a moment" not in res.content:
+                return res.content
+        except: pass
+        return None
+
+    # 开 3 个独立线程，像赛狗一样同时去抢数据
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [
+            executor.submit(try_direct),
+            executor.submit(try_allorigins),
+            executor.submit(try_codetabs)
+        ]
+        # 谁第一个拿到数据，就立刻返回谁，抛弃另外两个
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res:
+                return res
 
     return None
 
