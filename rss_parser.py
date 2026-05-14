@@ -6,6 +6,7 @@ import urllib.parse
 import concurrent.futures
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from http_client import shared_session
 
 # ================== 会话池配置 ==================
 
@@ -36,26 +37,71 @@ rss_dedicated_session = create_rss_session()
 # ================== 核心抓取与翻译 ==================
 
 def fetch_rss_content(url):
-    """【反爬虫终极利器】：直连 + 跳板双重绕过"""
-    # 1. 尝试伪装浏览器直连 (4秒)
-    try:
-        res = rss_dedicated_session.get(url, timeout=4.0)
-        res.raise_for_status()
-        return res.content
-    except Exception:
-        pass
+    """【反爬虫终极利器】：4 路并发对冲 + 严格剔除防爬虫假网页"""
 
-    # 2. 如果 GitHub Actions 的云端 IP 被华盛顿邮报拉黑，动用 Allorigins 代理跳板 (4秒)
-    try:
-        proxy_url = f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}"
-        # 这里用普通的 requests 发送，避免复杂的 headers 反而干扰代理服务器
-        res = requests.get(proxy_url, timeout=4.0)
-        if res.status_code == 200:
-            data = res.json()
-            if "contents" in data and data["contents"]:
-                return data["contents"].encode('utf-8')
-    except Exception:
-        pass
+    # 过滤器：严格验证是否为真实的新闻 XML，防止把防爬虫 HTML 当成新闻解析
+    def is_valid_xml(content_bytes):
+        if not content_bytes: return False
+        content_lower = content_bytes.lower()
+        # 必须包含 RSS 或 Atom 的核心标签
+        if b"<rss" in content_lower or b"<feed" in content_lower or b"<channel" in content_lower:
+            # 且不能包含常见的防爬虫特征 (Cloudflare, PerimeterX, 等)
+            if b"just a moment" in content_lower or b"are you a robot" in content_lower or b"security check" in content_lower:
+                return False
+            return True
+        return False
+
+    def try_direct():
+        try:
+            res = rss_dedicated_session.get(url, timeout=4.5)
+            if res.status_code == 200 and is_valid_xml(res.content):
+                return res.content
+        except: pass
+        return None
+
+    def try_allorigins():
+        try:
+            proxy_url = f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}"
+            res = requests.get(proxy_url, timeout=4.5)
+            if res.status_code == 200:
+                data = res.json()
+                if "contents" in data and data["contents"]:
+                    content_bytes = data["contents"].encode('utf-8')
+                    if is_valid_xml(content_bytes): return content_bytes
+        except: pass
+        return None
+
+    def try_codetabs():
+        try:
+            proxy_url = f"https://api.codetabs.com/v1/proxy/?quest={url}"
+            res = requests.get(proxy_url, timeout=4.5)
+            if res.status_code == 200 and is_valid_xml(res.content):
+                return res.content
+        except: pass
+        return None
+
+    def try_corsproxy():
+        try:
+            proxy_url = f"https://corsproxy.io/?url={urllib.parse.quote(url)}"
+            res = requests.get(proxy_url, timeout=4.5)
+            if res.status_code == 200 and is_valid_xml(res.content):
+                return res.content
+        except: pass
+        return None
+
+    # 开 4 个独立线程，像赛狗一样同时去抢同一份数据
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(try_direct),
+            executor.submit(try_allorigins),
+            executor.submit(try_codetabs),
+            executor.submit(try_corsproxy)
+        ]
+        # 谁第一个拿到真实的 XML 数据，立刻返回
+        for future in concurrent.futures.as_completed(futures):
+            res = future.result()
+            if res:
+                return res
 
     return None
 
@@ -75,6 +121,7 @@ def batch_translate_deepseek(titles, api_key):
     }
 
     try:
+        # 大模型翻译时限锁定 8 秒
         response = deepseek_session.post("https://api.deepseek.com/chat/completions", headers=headers, json=payload, timeout=8.0)
         response.raise_for_status()
         content = response.json()['choices'][0]['message']['content'].strip()
@@ -91,7 +138,6 @@ def batch_translate_deepseek(titles, api_key):
             result.append(translated_dict.get(i, titles[i].replace('|', '-')))
         return result
     except Exception as e:
-        # 大模型卡壳时秒退英文
         return [t.replace('|', '-') for t in titles]
 
 def process_single_site(category, site_info, api_key):
@@ -99,16 +145,18 @@ def process_single_site(category, site_info, api_key):
     keywords = site_info["keywords"]
     url = site_info["url"]
 
-    # 替换原本的 shared_session 抓取逻辑，启用抗封锁神器
+    # 启用抗封锁并发引擎
     content = fetch_rss_content(url)
 
     if not content:
-        return f"| **{category}** | {site_name} | *{keywords}* | [抓取超时或IP被拦截] |\n"
+        # 只有在直连和3个跳板全军覆没、或者抓到假网页时，才会走到这里
+        return f"| **{category}** | {site_name} | *{keywords}* | [防爬虫强力拦截或抓取超时] |\n"
 
     try:
         feed = feedparser.parse(content)
 
         if not feed.entries:
+            # 走到这里，说明是真 XML，但真的没发新闻
             return f"| **{category}** | {site_name} | *{keywords}* | [暂无更新] |\n"
 
         entries = feed.entries[:3]
@@ -140,6 +188,7 @@ def fetch_rss_news(rss_config, api_key):
     print(f"📡 RSS 模块：准备并发抓取与翻译 {task_count} 个源...")
 
     results = []
+    # 动态分配线程，最高允许 50 个并发（一波流）
     max_threads = min(50, task_count) if task_count > 0 else 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
         futures = [executor.submit(process_single_site, cat, info, api_key) for cat, info in tasks]
