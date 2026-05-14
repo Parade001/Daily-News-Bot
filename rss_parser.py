@@ -6,9 +6,8 @@ import urllib.parse
 import concurrent.futures
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from http_client import shared_session
 
-# ================== 会话池配置 ==================
+# ================== 会话池配置 (多重身份伪装) ==================
 
 def create_deepseek_session():
     session = requests.Session()
@@ -18,53 +17,65 @@ def create_deepseek_session():
     session.mount('https://', adapter)
     return session
 
-def create_rss_session():
+def create_chrome_session():
     session = requests.Session()
-    # 【终极欺骗】：不装普通 Chrome 浏览器了，我们装作 Google 搜索引擎的爬虫！
-    # 新闻网站为了 SEO 流量，防火墙绝对不敢拦截 Googlebot。
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.9"
+    })
+    adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=Retry(total=0))
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
+
+def create_googlebot_session():
+    session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
         "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.9",
-        "X-Forwarded-For": "66.249.66.1"  # 伪造 Google 爬虫的专用 IP 段
+        "X-Forwarded-For": "66.249.66.1"
     })
-    retries = Retry(total=0)
-    adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=retries)
+    adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=Retry(total=0))
     session.mount('http://', adapter)
     session.mount('https://', adapter)
     return session
 
 deepseek_session = create_deepseek_session()
-rss_dedicated_session = create_rss_session()
+chrome_session = create_chrome_session()
+googlebot_session = create_googlebot_session()
 
 # ================== 核心抓取与翻译 ==================
 
 def fetch_rss_content(url):
-    """【反爬虫终极利器】：4 路并发对冲 + 严格剔除防爬虫假网页"""
+    """【全天候穿甲弹】：多面具身份伪装 + 全通道跳板并发对冲"""
 
-    # 过滤器：严格验证是否为真实的新闻 XML，防止把防爬虫 HTML 当成新闻解析
     def is_valid_xml(content_bytes):
         if not content_bytes: return False
         content_lower = content_bytes.lower()
-        # 必须包含 RSS 或 Atom 的核心标签
         if b"<rss" in content_lower or b"<feed" in content_lower or b"<channel" in content_lower:
-            # 且不能包含常见的防爬虫特征 (Cloudflare, PerimeterX, 等)
             if b"just a moment" in content_lower or b"are you a robot" in content_lower or b"security check" in content_lower:
                 return False
             return True
         return False
 
-    def try_direct():
+    def try_chrome():
         try:
-            res = rss_dedicated_session.get(url, timeout=4.5)
-            if res.status_code == 200 and is_valid_xml(res.content):
-                return res.content
+            res = chrome_session.get(url, timeout=4.5)
+            if res.status_code == 200 and is_valid_xml(res.content): return res.content
+        except: pass
+        return None
+
+    def try_googlebot():
+        try:
+            res = googlebot_session.get(url, timeout=4.5)
+            if res.status_code == 200 and is_valid_xml(res.content): return res.content
         except: pass
         return None
 
     def try_allorigins():
         try:
             proxy_url = f"https://api.allorigins.win/get?url={urllib.parse.quote(url)}"
-            res = requests.get(proxy_url, timeout=4.5)
+            res = chrome_session.get(proxy_url, timeout=4.5)
             if res.status_code == 200:
                 data = res.json()
                 if "contents" in data and data["contents"]:
@@ -73,33 +84,32 @@ def fetch_rss_content(url):
         except: pass
         return None
 
-    def try_codetabs():
+    def try_rss2json():
         try:
-            proxy_url = f"https://api.codetabs.com/v1/proxy/?quest={url}"
-            res = requests.get(proxy_url, timeout=4.5)
-            if res.status_code == 200 and is_valid_xml(res.content):
-                return res.content
+            proxy_url = f"https://api.rss2json.com/v1/api.json?rss_url={urllib.parse.quote(url)}"
+            res = chrome_session.get(proxy_url, timeout=4.5)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("status") == "ok":
+                    xml_str = '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>'
+                    for item in data.get("items", [])[:3]:
+                        title = item.get('title', '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                        link = item.get('link', '').replace('&', '&amp;')
+                        xml_str += f"<item><title>{title}</title><link>{link}</link></item>"
+                    xml_str += "</channel></rss>"
+                    return xml_str.encode('utf-8')
         except: pass
         return None
 
-    def try_corsproxy():
-        try:
-            proxy_url = f"https://corsproxy.io/?url={urllib.parse.quote(url)}"
-            res = requests.get(proxy_url, timeout=4.5)
-            if res.status_code == 200 and is_valid_xml(res.content):
-                return res.content
-        except: pass
-        return None
-
-    # 开 4 个独立线程，像赛狗一样同时去抢同一份数据
+    # 开 4 个不同身份/通道的独立线程，进行极限竞速
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = [
-            executor.submit(try_direct),
+            executor.submit(try_chrome),
+            executor.submit(try_googlebot),
             executor.submit(try_allorigins),
-            executor.submit(try_codetabs),
-            executor.submit(try_corsproxy)
+            executor.submit(try_rss2json)
         ]
-        # 谁第一个拿到真实的 XML 数据，立刻返回
+        # 谁最先骗过防火墙拿到真实数据，就返回给主程序
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
             if res:
@@ -147,18 +157,16 @@ def process_single_site(category, site_info, api_key):
     keywords = site_info["keywords"]
     url = site_info["url"]
 
-    # 启用抗封锁并发引擎
     content = fetch_rss_content(url)
 
     if not content:
-        # 只有在直连和3个跳板全军覆没、或者抓到假网页时，才会走到这里
+        # 4路人马全军覆没时才会报错
         return f"| **{category}** | {site_name} | *{keywords}* | [防爬虫强力拦截或抓取超时] |\n"
 
     try:
         feed = feedparser.parse(content)
 
         if not feed.entries:
-            # 走到这里，说明是真 XML，但真的没发新闻
             return f"| **{category}** | {site_name} | *{keywords}* | [暂无更新] |\n"
 
         entries = feed.entries[:3]
@@ -190,7 +198,7 @@ def fetch_rss_news(rss_config, api_key):
     print(f"📡 RSS 模块：准备并发抓取与翻译 {task_count} 个源...")
 
     results = []
-    # 动态分配线程，最高允许 50 个并发（一波流）
+    # 动态分配线程，一波流
     max_threads = min(50, task_count) if task_count > 0 else 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
         futures = [executor.submit(process_single_site, cat, info, api_key) for cat, info in tasks]
