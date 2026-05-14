@@ -8,9 +8,9 @@
   "rss_sources": {
     "国际/美国主流媒体": [
       {"site": "The New York Times (纽约时报)", "keywords": "美国政治, 国际关系", "url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"},
-      {"site": "The Washington Post (华盛顿邮报)", "keywords": "华盛顿内幕, 全球视野", "url": "https://feeds.washingtonpost.com/rss/world"},
+      {"site": "Yahoo Finance", "keywords": "市场新闻 (Markets)", "url": "https://finance.yahoo.com/news/rss"},
       {"site": "金融时报 (FT)", "keywords": "商业新闻 (Business)", "url": "https://www.ft.com/markets?format=rss"},
-      {"site": "CNBC", "keywords": "市场新闻 (Markets)", "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?id=10000664"},
+      {"site": "Yahoo Finance", "keywords": "市场新闻 (Markets)", "url": "https://finance.yahoo.com/news/rss"},
       {"site": "CNN", "keywords": "突发新闻, 地缘冲突", "url": "http://rss.cnn.com/rss/edition_world.rss"},
       {"site": "Fox News (福克斯新闻)", "keywords": "保守派视角, 美国内政", "url": "http://feeds.foxnews.com/foxnews/world"},
       {"site": "Los Angeles Times (洛杉矶时报)", "keywords": "美国西海岸, 亚太焦点", "url": "https://www.latimes.com/world/rss2.0.xml"},
