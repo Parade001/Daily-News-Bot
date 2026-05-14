@@ -8,7 +8,6 @@
   "rss_sources": {
     "国际/美国主流媒体": [
       {"site": "The New York Times (纽约时报)", "keywords": "美国政治, 国际关系", "url": "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"},
-      {"site": "Yahoo Finance", "keywords": "市场新闻 (Markets)", "url": "https://finance.yahoo.com/news/rss"},
       {"site": "金融时报 (FT)", "keywords": "商业新闻 (Business)", "url": "https://www.ft.com/markets?format=rss"},
       {"site": "Yahoo Finance", "keywords": "市场新闻 (Markets)", "url": "https://finance.yahoo.com/news/rss"},
       {"site": "CNN", "keywords": "突发新闻, 地缘冲突", "url": "http://rss.cnn.com/rss/edition_world.rss"},
