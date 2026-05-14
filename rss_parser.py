@@ -20,10 +20,12 @@ def create_deepseek_session():
 
 def create_rss_session():
     session = requests.Session()
-    # 伪装成真实的 Chrome 浏览器
+    # 【终极欺骗】：不装普通 Chrome 浏览器了，我们装作 Google 搜索引擎的爬虫！
+    # 新闻网站为了 SEO 流量，防火墙绝对不敢拦截 Googlebot。
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.9"
+        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+        "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*;q=0.9",
+        "X-Forwarded-For": "66.249.66.1"  # 伪造 Google 爬虫的专用 IP 段
     })
     retries = Retry(total=0)
     adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100, max_retries=retries)
