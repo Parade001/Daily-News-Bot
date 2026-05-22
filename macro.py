@@ -9,7 +9,7 @@ from risk_engine import execute_quant_strategy
 # ================== 辅助格式化函数 ==================
 
 def get_daily_change(history):
-    if not history or len(history) < 2: return "0.00%"
+    if not history or len(history) < 2: return "[数据缺失]"
     chg = get_ret(history) * 100
     color = "#d93025" if chg < 0 else ("#1e8e3e" if chg > 0 else "#555")
     sign = "+" if chg > 0 else ""
@@ -91,27 +91,27 @@ def extract_factors(api_key):
     }
     f['cnh_stress_pips'] = cnh_stress_pips
 
-    f['z_vix'] = calc_robust_z(vix[0], vix) if vix else 0.0
-    f['z_move'] = calc_robust_z(move[0], move) if move else 0.0
-    f['z_hy'] = calc_robust_z(hy[0], hy) if hy else 0.0
-    f['z_realrate'] = calc_robust_z(rr[0], rr) if rr else 0.0
-    f['z_us10y'] = calc_robust_z(us10[0], us10) if us10 else 0.0
-    f['z_dxy'] = calc_robust_z(dxy[0], dxy) if dxy else 0.0
-    f['z_yc'] = calc_robust_z(yc_cur, yc) if yc else 0.0
-    f['z_t10'] = calc_robust_z(t10_cur, t10) if t10 else 0.0
+    f['z_vix'] = calc_robust_z(vix[0], vix) if vix else None
+    f['z_move'] = calc_robust_z(move[0], move) if move else None
+    f['z_hy'] = calc_robust_z(hy[0], hy) if hy else None
+    f['z_realrate'] = calc_robust_z(rr[0], rr) if rr else None
+    f['z_us10y'] = calc_robust_z(us10[0], us10) if us10 else None
+    f['z_dxy'] = calc_robust_z(dxy[0], dxy) if dxy else None
+    f['z_yc'] = calc_robust_z(yc_cur, yc) if yc else None
+    f['z_t10'] = calc_robust_z(t10_cur, t10) if t10 else None
 
     f['z_vix_mom'] = calc_momentum_z(vix, window=5)
     f['z_realrate_mom'] = calc_momentum_z(rr, window=3)
 
-    f['liq_delta_z'], f['liq_impulse'] = 0.0, 0.0
+    f['liq_delta_z'], f['liq_impulse'] = None, None
     if walcl and rrp and tga:
         min_len = min(len(walcl), len(rrp), len(tga))
         if min_len > 30:
             raw_deltas = [ (walcl[i]-rrp[i]-tga[i]) - (walcl[i+20]-rrp[i+20]-tga[i+20]) for i in range(min_len - 20) ]
             smoothed = calc_ema(raw_deltas, span=10)
-            f['liq_delta_z'] = calc_robust_z(smoothed[0], smoothed) if smoothed else 0.0
+            f['liq_delta_z'] = calc_robust_z(smoothed[0], smoothed) if smoothed else None
             liq_mom_z = calc_momentum_z(smoothed, window=5) if smoothed else 0.0
-            f['liq_impulse'] = f['liq_delta_z'] + 0.5 * liq_mom_z
+            f['liq_impulse'] = f['liq_delta_z'] + 0.5 * liq_mom_z if f['liq_delta_z'] is not None else None
 
     return f
 
@@ -127,8 +127,9 @@ def generate_dynamic_analysis(raw, raw_f, risk_comp):
         except: desc['A'] = "⚠️ 暂无最新结构数据"
     else: desc['A'] = "⚠️ 暂无最新结构数据"
 
-    lz = raw_f.get('liq_delta_z', 0)
-    if lz > 1.0: desc['B'] = "🌊 放水周期：流动性边际大幅宽松，利好风险资产。"
+    lz = raw_f.get('liq_delta_z')
+    if lz is None: desc['B'] = "⚠️ 流动性序列缺失：当前按保守模式处理。"
+    elif lz > 1.0: desc['B'] = "🌊 放水周期：流动性边际大幅宽松，利好风险资产。"
     elif lz < -1.0: desc['B'] = "🏜️ 抽水周期：流动性边际收紧，压制估值。"
     else: desc['B'] = "⚖️ 中性震荡：流动性无明显边际方向。"
 
@@ -149,14 +150,16 @@ def generate_dynamic_analysis(raw, raw_f, risk_comp):
         else: desc['D'] = "⚖️ 预期温和：通胀预期处于常态区间。"
     else: desc['D'] = "⚠️ 场内数据缺失"
 
-    rz = raw_f.get('z_realrate', 0)
-    if rz > 1.5: desc['E'] = "🧱 极度压制：实际利率达历史高位，黄金估值承压。"
+    rz = raw_f.get('z_realrate')
+    if rz is None: desc['E'] = "⚠️ 实际利率缺失：估值判断已降级。"
+    elif rz > 1.5: desc['E'] = "🧱 极度压制：实际利率达历史高位，黄金估值承压。"
     elif rz < -1.5: desc['E'] = "🚀 极度宽松：实际利率大跌，黄金的绝佳顺风期。"
     else: desc['E'] = "⚖️ 估值中性：利率未见极端偏离。"
 
     hy = raw.get('hy')
-    hz = raw_f.get('z_hy', 0)
-    if hy is not None and (hy > 5.0 or hz > 2.0): desc['F'] = "🚨 违约警报：企业融资困难，经济衰退风险飙升！"
+    hz = raw_f.get('z_hy')
+    if hz is None: desc['F'] = "⚠️ 信用利差缺失：违约压力仅能部分判断。"
+    elif hy is not None and (hy > 5.0 or hz > 2.0): desc['F'] = "🚨 违约警报：企业融资困难，经济衰退风险飙升！"
     else: desc['F'] = "✅ 信用健康：高收益债市未见违约恐慌。"
 
     yc = raw.get('yc')
@@ -166,8 +169,9 @@ def generate_dynamic_analysis(raw, raw_f, risk_comp):
         else: desc['G'] = "✅ 曲线正常：经济周期处于健康扩展期。"
     else: desc['G'] = "⚠️ 场内数据缺失"
 
-    dz = raw_f.get('z_dxy', 0)
-    if dz > 1.5: desc['H'] = "🌪️ 强势美元：全球流动性被虹吸，重挫非美与大宗。"
+    dz = raw_f.get('z_dxy')
+    if dz is None: desc['H'] = "⚠️ 美元指数缺失：外部流动性方向不明确。"
+    elif dz > 1.5: desc['H'] = "🌪️ 强势美元：全球流动性被虹吸，重挫非美与大宗。"
     elif dz < -1.5: desc['H'] = "🌊 弱势美元：资金流出美国，利好新兴市场。"
     else: desc['H'] = "⚖️ 震荡区间：未形成单边的极值趋势。"
 
@@ -236,6 +240,10 @@ def fetch_macro_indicators(fred_api_key=None):
     pos, action, risk_comp, constraints, raw_f = execute_quant_strategy(f)
     raw = f['raw']
     risk_exp = raw_f.get('risk_exposure', {})
+    pre_constraint_risk_exp = raw_f.get('pre_constraint_risk_exposure', {})
+    executed_pos = raw_f.get('executed_pos', pos)
+    constrained_target_pos = raw_f.get('constrained_target_pos', {})
+    data_quality = raw_f.get('data_quality', {})
 
     hibor_name = raw.get('hibor_name', '隔夜')
     desc = generate_dynamic_analysis(raw, raw_f, risk_comp)
@@ -249,7 +257,7 @@ def fetch_macro_indicators(fred_api_key=None):
     # 【这里是核心！满血找回 Level 9 的风险 OS 面板】
     regime_emoji = {"RISK_ON": "🚀 狂暴多头", "NORMAL": "⚖️ 常态震荡", "DRAWDOWN": "🛡️ 回撤逆风期", "CRISIS": "🚨 宏观危机"}
     md += "## 🧭 桥水级：动态风险操作系统 (Risk OS - Level 9)\n\n"
-    md += "| 真实净值(NAV) | 当前回撤 | 今日执行摩擦成本 | 宏观状态机(Regime) | 动态风险预算乘数 |\n"
+    md += "| 策略模拟净值(NAV) | 当前回撤 | 今日执行摩擦成本 | 宏观状态机(Regime) | 动态风险预算乘数 |\n"
     md += "| :--- | :--- | :--- | :--- | :--- |\n"
 
     # 确保兼容部分状态机字段可能缺失的情况，设置安全默认值
@@ -260,6 +268,9 @@ def fetch_macro_indicators(fred_api_key=None):
     dd_pen = raw_f.get('dd_penalty', 1.0)
 
     md += f"| **{sys_nav:.4f}** | **{sys_dd*100:.2f}%** | **-{fric_cost*10000:.1f} bps** | **{regime_emoji.get(sys_regime, '未知')}** | **{dd_pen:.2f}x** |\n\n"
+
+    if data_quality.get("issues"):
+        md += f"> **⚠️ 数据质量告警**：{'，'.join(data_quality['issues'][:6])}。系统已自动按保守口径降维。\n\n"
 
     md += "| 宏观风险维度 (Risk Dimension) | 系统当前暴露量 | 设定预算上限 (Budget) | 风险诊断状态 |\n"
     md += "| :--- | :--- | :--- | :--- |\n"
@@ -284,12 +295,15 @@ def fetch_macro_indicators(fred_api_key=None):
     if "GLOBAL" in constraints: md += f"> **🚨 尾部熔断**：{constraints['GLOBAL']}\n\n"
     if "PORTFOLIO" in constraints: md += f"> **⚖️ 组合风控**：{constraints['PORTFOLIO']}\n\n"
 
-    md += "| 资产大类 | 今日涨跌幅 | EMA 平滑后仓位 | 💡 操作建议 (Action) | 状态引擎 (Regime) |\n"
-    md += "| :--- | :--- | :--- | :--- | :--- |\n"
-    md += f"| **标普500 (VOO)** | {get_daily_change(f['voo_hist'])} | **{pos_to_str(pos['VOO'])}** | **{action['VOO']}** | {constraints['VOO']} |\n"
-    md += f"| **纳指100 (QQQ)** | {get_daily_change(f['qqq_hist'])} | **{pos_to_str(pos['QQQ'])}** | **{action['QQQ']}** | {constraints['QQQ']} |\n"
-    md += f"| **避险黄金 (18.HK)** | {get_daily_change(f['gold_hist'])} | **{pos_to_str(pos['GOLD'])}** | **{action['GOLD']}** | {constraints['GOLD']} |\n"
-    md += f"| **大宗商品 (COPX)** | {get_daily_change(f['copx_hist'])} | **{pos_to_str(pos['COPX'])}** | **{action['COPX']}** | {constraints['COPX']} |\n\n"
+    md += "| 资产大类 | 今日涨跌幅 | 约束后目标仓位 | 执行后仓位 | 💡 操作建议 (Action) | 状态引擎 |\n"
+    md += "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+    md += f"| **标普500 (VOO)** | {get_daily_change(f['voo_hist'])} | **{pos_to_str(constrained_target_pos.get('VOO', 0.0))}** | **{pos_to_str(executed_pos.get('VOO', 0.0))}** | **{action['VOO']}** | {constraints['VOO']} |\n"
+    md += f"| **纳指100 (QQQ)** | {get_daily_change(f['qqq_hist'])} | **{pos_to_str(constrained_target_pos.get('QQQ', 0.0))}** | **{pos_to_str(executed_pos.get('QQQ', 0.0))}** | **{action['QQQ']}** | {constraints['QQQ']} |\n"
+    md += f"| **COMEX黄金 (GC=F)** | {get_daily_change(f['gold_hist'])} | **{pos_to_str(constrained_target_pos.get('GOLD', 0.0))}** | **{pos_to_str(executed_pos.get('GOLD', 0.0))}** | **{action['GOLD']}** | {constraints['GOLD']} |\n"
+    md += f"| **铜矿股 (COPX)** | {get_daily_change(f['copx_hist'])} | **{pos_to_str(constrained_target_pos.get('COPX', 0.0))}** | **{pos_to_str(executed_pos.get('COPX', 0.0))}** | **{action['COPX']}** | {constraints['COPX']} |\n\n"
+
+    if pre_constraint_risk_exp:
+        md += f"> 执行前风险暴露：Rate {pre_constraint_risk_exp.get('rate', 0):.2f} / Liquidity {pre_constraint_risk_exp.get('liquidity', 0):.2f} / China {pre_constraint_risk_exp.get('china_macro', 0):.2f}\n\n"
 
     md += "## 📈 核心宏观全景面板 (指标判读分析)\n\n"
     md += "| 变量名称 | 最新绝对数值 | 因子状态 (Z-Score) | 核心驱动逻辑 (今日动态判读) |\n"

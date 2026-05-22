@@ -72,7 +72,8 @@ def get_yahoo_history(ticker):
         closes = [c for c in data['chart']['result'][0]['indicators']['quote'][0]['close'] if c is not None]
         closes.reverse()
         return (closes[0], closes) if closes else (None, [])
-    except: return None, []
+    except Exception:
+        return None, []
 
 def get_yahoo_quote(ticker):
     url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}"
@@ -108,7 +109,8 @@ def get_cips_structural_news():
             pub_date = latest_news.published if hasattr(latest_news, 'published') else "近期"
             highlight_title = re.sub(r'(\d+(?:\.\d+)?(?:万亿|亿|万))', r'**\1**', title)
             return f"<a href='{link}' target='_blank' style='color:#1a73e8; text-decoration:underline;'>{highlight_title}</a> <br><span style='font-size:11px;color:#888;'>({pub_date})</span>"
-    except: pass
+    except Exception:
+        pass
     return "系统未检索到本年度 CIPS 官方重磅数据"
 
 def get_cnh_hibor():

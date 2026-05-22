@@ -32,11 +32,27 @@ def calc_momentum_z(history, window=3):
     momentum_series = [history[i] - history[i+window] for i in range(len(history)-window)]
     return calc_robust_z(momentum_series[0], momentum_series)
 
+def get_return_series(history, window=None):
+    if not history or len(history) < 2:
+        return []
+
+    series = []
+    limit = len(history) - 1 if window is None else min(len(history) - 1, window)
+    for i in range(limit):
+        prev_price = history[i + 1]
+        cur_price = history[i]
+        if prev_price in (None, 0):
+            continue
+        series.append((cur_price - prev_price) / prev_price)
+    return series
+
 def calc_correlation(x, y, window=60):
     if not x or not y: return 0.0
-    min_len = min(len(x), len(y), window)
+    ret_x = get_return_series(x, window=window)
+    ret_y = get_return_series(y, window=window)
+    min_len = min(len(ret_x), len(ret_y))
     if min_len < 20: return 0.0
-    slice_x, slice_y = x[:min_len], y[:min_len]
+    slice_x, slice_y = ret_x[:min_len], ret_y[:min_len]
     mean_x, mean_y = sum(slice_x)/min_len, sum(slice_y)/min_len
     cov = sum((a - mean_x) * (b - mean_y) for a, b in zip(slice_x, slice_y))
     var_x = sum((a - mean_x)**2 for a in slice_x)

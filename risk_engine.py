@@ -1,12 +1,22 @@
 import os
 import json
+import tempfile
 from quant_calc import calc_ma, calc_ma_slope, calc_volatility_z, calc_correlation, get_ret, z_to_position
 
-STATE_FILE = "macro_state.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATE_FILE = os.path.join(BASE_DIR, "macro_state.json")
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+ASSETS = ("VOO", "QQQ", "GOLD", "COPX")
+DEFAULT_POS = {asset: 0.0 for asset in ASSETS}
 
 def load_state():
     default_state = {
-        "pos": {"VOO": 0.0, "QQQ": 0.0, "GOLD": 0.0, "COPX": 0.0},
+        "pos": dict(DEFAULT_POS),
         "risk_comp": 0.0,
         "nav_real": 1.0,
         "hwm": 1.0,
@@ -15,21 +25,95 @@ def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                if fcntl is not None:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_SH)
                 data = json.load(f)
-                return {**default_state, **data}
-        except: pass
+                merged = {**default_state, **data}
+                merged["pos"] = {**DEFAULT_POS, **(data.get("pos") or {})}
+                return merged
+        except Exception:
+            pass
     return default_state
 
 def save_state(state_dict):
     try:
-        with open(STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state_dict, f)
-    except: pass
+        state_dir = os.path.dirname(STATE_FILE) or "."
+        os.makedirs(state_dir, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix="macro_state_", suffix=".json", dir=state_dir)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                if fcntl is not None:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                json.dump(state_dict, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, STATE_FILE)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
+    except Exception:
+        pass
+
+def calc_risk_exposure(pos):
+    return {
+        "rate": pos["QQQ"] * 1.5 + pos["VOO"] * 0.8 + pos["GOLD"] * 1.0,
+        "liquidity": pos["VOO"] * 1.0 + pos["QQQ"] * 1.5 + pos["COPX"] * 1.0,
+        "china_macro": pos["COPX"] * 1.5
+    }
+
+def assess_data_quality(factors):
+    required_assets = {
+        "VOO": factors.get("voo_hist", []),
+        "QQQ": factors.get("qqq_hist", []),
+        "GOLD": factors.get("gold_hist", []),
+        "COPX": factors.get("copx_hist", [])
+    }
+    required_signals = {
+        "z_vix": factors.get("z_vix"),
+        "z_move": factors.get("z_move"),
+        "z_hy": factors.get("z_hy"),
+        "z_realrate": factors.get("z_realrate"),
+        "z_us10y": factors.get("z_us10y"),
+        "z_dxy": factors.get("z_dxy"),
+        "z_yc": factors.get("z_yc"),
+        "z_t10": factors.get("z_t10")
+    }
+
+    issues = []
+    for asset, history in required_assets.items():
+        if len(history) < 210:
+            issues.append(f"{asset}历史长度不足")
+    for name, value in required_signals.items():
+        if value is None:
+            issues.append(f"{name}缺失")
+
+    if len(issues) >= 5:
+        scale = 0.0
+    elif issues:
+        scale = 0.5
+    else:
+        scale = 1.0
+
+    return {
+        "issues": issues,
+        "degrade_scale": scale,
+        "is_healthy": not issues
+    }
 
 def execute_quant_strategy(f):
     pos, const, action = {}, {}, {}
     state = load_state()
-    prev_pos = state.get("pos", {"VOO": 0.0, "QQQ": 0.0, "GOLD": 0.0, "COPX": 0.0})
+    prev_pos = {**DEFAULT_POS, **state.get("pos", {})}
+    z_vix = f.get('z_vix') if f.get('z_vix') is not None else 0.0
+    z_move = f.get('z_move') if f.get('z_move') is not None else 0.0
+    z_hy = f.get('z_hy') if f.get('z_hy') is not None else 0.0
+    z_realrate = f.get('z_realrate') if f.get('z_realrate') is not None else 0.0
+    z_us10y = f.get('z_us10y') if f.get('z_us10y') is not None else 0.0
+    z_dxy = f.get('z_dxy') if f.get('z_dxy') is not None else 0.0
+    z_yc = f.get('z_yc') if f.get('z_yc') is not None else 0.0
+    z_t10 = f.get('z_t10') if f.get('z_t10') is not None else 0.0
+    liq_impulse = f.get('liq_impulse') if f.get('liq_impulse') is not None else 0.0
 
     # PnL & Drawdown Feedback
     port_ret = sum([
@@ -44,9 +128,9 @@ def execute_quant_strategy(f):
     drawdown = (hwm - nav_real) / hwm if hwm > 0 else 0.0
 
     # Risk Comp & Regime
-    risk_comp_base = max(f['z_vix'], f['z_move'], f['z_hy']) * 0.6 + sum([f['z_vix'], f['z_move'], f['z_hy']])/3.0 * 0.4
+    risk_comp_base = max(z_vix, z_move, z_hy) * 0.6 + sum([z_vix, z_move, z_hy]) / 3.0 * 0.4
     risk_comp_adj = risk_comp_base + 0.5 * max(0, f.get('z_vix_mom', 0.0))
-    tail_shock_proxy = max(0, f.get('z_vix_mom', 0.0) + f.get('z_move', 0.0))
+    tail_shock_proxy = max(0, f.get('z_vix_mom', 0.0) + z_move)
 
     if risk_comp_adj > 2.5 or tail_shock_proxy > 4.0: current_regime = "CRISIS"
     elif drawdown > 0.05: current_regime = "DRAWDOWN"
@@ -66,22 +150,23 @@ def execute_quant_strategy(f):
     # Dynamic Weights
     if current_regime == "CRISIS": w_liq, w_risk, w_rate = 0.1, 2.0, 1.0
     elif current_regime == "DRAWDOWN": w_liq, w_risk, w_rate = 0.4, 1.2, 0.8
-    else: w_liq, w_risk, w_rate = (0.3, 1.2, 0.8) if f['z_us10y'] > 1.5 else (0.8, 0.8, 0.4)
+    else: w_liq, w_risk, w_rate = (0.3, 1.2, 0.8) if z_us10y > 1.5 else (0.8, 0.8, 0.4)
 
-    usd_tightening = max(0, f['z_dxy'])
-    global_liq = f['liq_impulse'] - 0.2 * usd_tightening
-    z_growth = -f['z_yc']
+    usd_tightening = max(0, z_dxy)
+    global_liq = liq_impulse - 0.2 * usd_tightening
+    z_growth = -z_yc
+    data_quality = assess_data_quality(f)
 
     # Base Signals
-    z_voo = (global_liq * w_liq) - (risk_penalty(risk_comp_adj) * w_risk) - (rate_penalty(f['z_realrate']) * 1.2)
-    z_qqq = (global_liq * w_liq * 1.5) - (risk_penalty(risk_comp_adj) * w_risk * 1.2) - (rate_penalty(f['z_realrate']) * 1.5)
-    gold_penalty = rate_penalty(f['z_realrate']) + 0.5 * max(0, f.get('z_realrate_mom', 0.0))
-    z_gold = (-gold_penalty * 1.0 - f['z_dxy'] * 0.5 + f['z_t10'] * 0.8 + risk_penalty(risk_comp_adj) * 0.3)
+    z_voo = (global_liq * w_liq) - (risk_penalty(risk_comp_adj) * w_risk) - (rate_penalty(z_realrate) * 1.2)
+    z_qqq = (global_liq * w_liq * 1.5) - (risk_penalty(risk_comp_adj) * w_risk * 1.2) - (rate_penalty(z_realrate) * 1.5)
+    gold_penalty = rate_penalty(z_realrate) + 0.5 * max(0, f.get('z_realrate_mom', 0.0))
+    z_gold = (-gold_penalty * 1.0 - z_dxy * 0.5 + z_t10 * 0.8 + risk_penalty(risk_comp_adj) * 0.3)
     cnh_stress = max(0, f.get('cnh_stress_pips', 0) / 300.0)
-    z_copx = -(f['z_dxy'] * 0.6) + (global_liq * w_liq) - (risk_penalty(risk_comp_adj) * w_risk) - cnh_stress + (z_growth * 0.5)
+    z_copx = -(z_dxy * 0.6) + (global_liq * w_liq) - (risk_penalty(risk_comp_adj) * w_risk) - cnh_stress + (z_growth * 0.5)
 
     def apply_filters(price, history, base_z, vol_z_override):
-        if not history or len(history) < 210: return 0.0, "数据不足"
+        if price is None or not history or len(history) < 210: return 0.0, "数据不足"
         ma200 = calc_ma(history, 200)
         slope = calc_ma_slope(history, 50, 10)
         confidence = 1.0 / (1.0 + max(0, vol_z_override - 1.0) * 0.3)
@@ -110,16 +195,12 @@ def execute_quant_strategy(f):
 
     dd_penalty = max(0.5, 1.0 - drawdown * 4.0)
     RISK_BUDGET = {"rate": 1.5 * dd_penalty, "liquidity": 2.0 * dd_penalty, "china_macro": 1.0 * dd_penalty}
-    f['risk_exposure'] = {
-        "rate": target_pos["QQQ"] * 1.5 + target_pos["VOO"] * 0.8 + target_pos["GOLD"] * 1.0,
-        "liquidity": target_pos["VOO"] * 1.0 + target_pos["QQQ"] * 1.5 + target_pos["COPX"] * 1.0,
-        "china_macro": target_pos["COPX"] * 1.5
-    }
+    pre_constraint_exposure = calc_risk_exposure(target_pos)
 
     triggered_budgets = []
     for k in RISK_BUDGET:
-        if f['risk_exposure'][k] > RISK_BUDGET[k]:
-            overload = f['risk_exposure'][k] / RISK_BUDGET[k]
+        if pre_constraint_exposure[k] > RISK_BUDGET[k]:
+            overload = pre_constraint_exposure[k] / RISK_BUDGET[k]
             if (1.0 / overload) < limit_budget: limit_budget = 1.0 / overload
             triggered_budgets.append(k)
     if triggered_budgets:
@@ -133,13 +214,20 @@ def execute_quant_strategy(f):
         limit_tail = 0.3
         const["GLOBAL"] = "🔥 已知系统性极度恐慌：全线强制降至 30% 防深 V"
 
-    final_scale = min(limit_corr, limit_budget, limit_tail)
-    for k in target_pos: target_pos[k] *= final_scale
+    final_scale = min(limit_corr, limit_budget, limit_tail, data_quality["degrade_scale"])
+    constrained_target_pos = {asset: target_pos[asset] * final_scale for asset in ASSETS}
+
+    if data_quality["issues"]:
+        const["GLOBAL"] = (
+            f"⚠️ 数据质量降级：{','.join(data_quality['issues'][:4])}"
+            if "GLOBAL" not in const
+            else const["GLOBAL"] + f" | ⚠️ 数据质量降级:{','.join(data_quality['issues'][:4])}"
+        )
 
     # Asymmetric Smoothing & Friction Cost
     daily_turnover = 0.0
-    for asset in ["VOO", "QQQ", "GOLD", "COPX"]:
-        target, prev = target_pos[asset], prev_pos.get(asset, 0.0)
+    for asset in ASSETS:
+        target, prev = constrained_target_pos[asset], prev_pos.get(asset, 0.0)
         if target == 0.0:
             pos[asset], action[asset] = 0.0, "🛑 止损清仓 (Clear)"
         else:
@@ -156,7 +244,14 @@ def execute_quant_strategy(f):
 
     save_state({"pos": pos, "risk_comp": risk_comp_adj, "nav_real": nav_real, "hwm": hwm, "regime": current_regime})
 
+    final_risk_exposure = calc_risk_exposure(pos)
     f['system_nav'], f['system_dd'], f['system_regime'] = nav_real, drawdown, current_regime
     f['dd_penalty'], f['friction_cost'] = dd_penalty, friction_cost
+    f['risk_exposure'] = final_risk_exposure
+    f['pre_constraint_risk_exposure'] = pre_constraint_exposure
+    f['target_pos'] = target_pos
+    f['constrained_target_pos'] = constrained_target_pos
+    f['executed_pos'] = pos
+    f['data_quality'] = data_quality
 
     return pos, action, risk_comp_adj, const, f
