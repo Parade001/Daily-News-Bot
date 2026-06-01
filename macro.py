@@ -251,6 +251,7 @@ def fetch_macro_indicators(fred_api_key=None):
     md = "## 🗺️ 市场宽度与全景热力图 (Market Breadth)\n\n"
     md += "> 提示：Finviz 底层为防爬虫实时渲染，点击下方加密通道直达原生热力图：\n\n"
     md += "👉 **[点击查看：美股 标普500 热力图 (S&P 500)](https://finviz.com/map.ashx?t=sec)**\n\n"
+    md += "👉 **[点击查看：美股 纳指100 热力图 (Nasdaq 100)](https://finviz.com/map?t=sec_ndx)**\n\n"
     md += "👉 **[点击查看：全球核心资产 热力图 (World)](https://finviz.com/map.ashx?t=geo)**\n\n"
     md += "---\n\n"
 
